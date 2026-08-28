@@ -1,14 +1,14 @@
 {
   "name": "workspace-status-mcp",
-  "version": "0.1.0",
-  "description": "MCP-сервер з одним інструментом sweep_status: знімок стану (git + CI) по всіх репозиторіях у теці одним викликом.",
+  "version": "0.2.0",
+  "description": "MCP-сервер: sweep_status (знімок git+CI по всіх репо) і check_docs (детектор застарілої/відсутньої архітектурної документації).",
   "type": "module",
   "bin": {
     "workspace-status-mcp": "./src/server.js"
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/smoke.mjs"
+    "test": "node --test test/smoke.mjs test/docs.mjs"
   },
   "license": "MIT",
   "author": "Faneraiy14",

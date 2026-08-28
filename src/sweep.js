@@ -15,7 +15,7 @@ const execFileAsync = promisify(execFile);
 
 const MAX_CONCURRENCY = 8;
 
-async function run(cmd, args, cwd) {
+export async function run(cmd, args, cwd) {
     try {
         const { stdout } = await execFileAsync(cmd, args, { cwd, maxBuffer: 4 * 1024 * 1024 });
         return { ok: true, stdout: stdout.trim() };
@@ -24,7 +24,7 @@ async function run(cmd, args, cwd) {
     }
 }
 
-async function findGitRepos(root) {
+export async function findGitRepos(root) {
     let entries;
     try {
         entries = await readdir(root, { withFileTypes: true });
