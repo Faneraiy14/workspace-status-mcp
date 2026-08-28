@@ -1,0 +1,19 @@
+{
+  "name": "workspace-status-mcp",
+  "version": "0.1.0",
+  "description": "MCP-сервер з одним інструментом sweep_status: знімок стану (git + CI) по всіх репозиторіях у теці одним викликом.",
+  "type": "module",
+  "bin": {
+    "workspace-status-mcp": "./src/server.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/smoke.mjs"
+  },
+  "license": "MIT",
+  "author": "Faneraiy14",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.24.0"
+  }
+}
