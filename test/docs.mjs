@@ -7,10 +7,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, rm, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, utimes, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkDocs } from '../src/docs.js';
+import { writeDoc } from '../src/write-doc.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -18,14 +19,21 @@ async function git(args, cwd) {
     await execFileAsync('git', args, { cwd });
 }
 
-async function makeRepoWithCommit(repoPath) {
-    await mkdir(repoPath, { recursive: true });
-    await git(['init', '-q'], repoPath);
-    await git(['config', 'user.email', 'test@test.local'], repoPath);
-    await git(['config', 'user.name', 'Test'], repoPath);
-    await writeFile(join(repoPath, 'file.txt'), 'hello');
+// Друге й наступні звернення до того самого repoPath додають ще один
+// коміт до вже наявного репо (потрібно для commit-tracking тесту нижче:
+// writeDoc() зафіксовує HEAD, тоді робимо ще один коміт і перевіряємо,
+// що checkDocs() бачить рівно 1 коміт дрейфу).
+async function makeRepoWithCommit(repoPath, message = 'init') {
+    const alreadyRepo = await stat(join(repoPath, '.git')).then(() => true).catch(() => false);
+    if (!alreadyRepo) {
+        await mkdir(repoPath, { recursive: true });
+        await git(['init', '-q'], repoPath);
+        await git(['config', 'user.email', 'test@test.local'], repoPath);
+        await git(['config', 'user.name', 'Test'], repoPath);
+    }
+    await writeFile(join(repoPath, `${message}.txt`), message);
     await git(['add', '.'], repoPath);
-    await git(['commit', '-q', '-m', 'init'], repoPath);
+    await git(['commit', '-q', '-m', message], repoPath);
 }
 
 test('checkDocs: 4 стани - missing/stale/current/no-commits', async () => {
@@ -94,6 +102,54 @@ test('checkDocs: docsRoot за замовчуванням - "<projectsRoot>/Arch
         await makeRepoWithCommit(join(root, 'proj'));
         const result = await checkDocs({ projectsRoot: root });
         assert.equal(result.repos[0].docPath, join(root, 'Architecture', 'proj.txt'));
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('checkDocs: документ, записаний через writeDoc(), відстежується по комітах, не по mtime', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'docs-test-'));
+    const docsRoot = join(root, 'Architecture');
+
+    try {
+        await makeRepoWithCommit(join(root, 'proj'), 'init');
+        await writeDoc({ projectsRoot: root, repo: 'proj', content: 'опис на момент запису', docsRoot });
+
+        // Одразу після writeDoc() - жодного нового коміту ще нема.
+        const fresh = await checkDocs({ projectsRoot: root, docsRoot, only_attention: false });
+        const freshEntry = fresh.repos.find((r) => r.name === 'proj');
+        assert.equal(freshEntry.status, 'current');
+        assert.equal(freshEntry.trackingMethod, 'commit');
+        assert.equal(freshEntry.commitsSinceWrite, 0);
+
+        // mtime самого .txt навмисно НЕ чіпаємо - лише новий коміт у репо.
+        // Якби трекінг досі був mtime-based, файл виглядав би "current",
+        // хоча реально відстав на 1 коміт.
+        await makeRepoWithCommit(join(root, 'proj'), 'ще одна зміна');
+
+        const after = await checkDocs({ projectsRoot: root, docsRoot, only_attention: false });
+        const afterEntry = after.repos.find((r) => r.name === 'proj');
+        assert.equal(afterEntry.status, 'stale');
+        assert.equal(afterEntry.trackingMethod, 'commit');
+        assert.equal(afterEntry.commitsSinceWrite, 1);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('checkDocs: документ без .meta (написаний напряму, не через writeDoc) - відкат на mtime', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'docs-test-'));
+    const docsRoot = join(root, 'Architecture');
+    await mkdir(docsRoot, { recursive: true });
+
+    try {
+        await makeRepoWithCommit(join(root, 'proj'));
+        await writeFile(join(docsRoot, 'proj.txt'), 'написано напряму Write-тулом, без write_doc');
+
+        const result = await checkDocs({ projectsRoot: root, docsRoot, only_attention: false });
+        const entry = result.repos.find((r) => r.name === 'proj');
+        assert.equal(entry.trackingMethod, 'mtime');
+        assert.equal(entry.status, 'current');
     } finally {
         await rm(root, { recursive: true, force: true });
     }

@@ -7,8 +7,9 @@ import { z } from 'zod';
 import { sweepStatus } from './sweep.js';
 import { checkDocs } from './docs.js';
 import { checkReleaseDrift } from './release-drift.js';
+import { writeDoc } from './write-doc.js';
 
-const server = new McpServer({ name: 'workspace-status-mcp', version: '0.3.0' });
+const server = new McpServer({ name: 'workspace-status-mcp', version: '0.4.0' });
 
 server.registerTool(
     'sweep_status',
@@ -39,11 +40,13 @@ server.registerTool(
     {
         title: 'Детектор застарілої/відсутньої архітектурної документації',
         description:
-            'Звіряє час останнього коміту кожного git-репозиторія з часом останньої зміни його ' +
-            '~/Projects/Architecture/<repo>.txt: "missing" (документації нема взагалі), "stale" (репо мав ' +
-            'нові коміти після останнього оновлення документа), "current" (актуально), "no-commits" ' +
-            '(репо ще без жодного коміту). НЕ генерує/переписує документацію сам - лише каже, куди дивитись, ' +
-            'щоб AI-асистент (чи людина) писав/оновлював цілеспрямовано, а не перечитував усе підряд щосесії.',
+            'Перевіряє актуальність ~/Projects/Architecture/<repo>.txt кожного git-репозиторія: "missing" ' +
+            '(документації нема взагалі), "stale" (репо мав нові зміни після документа), "current" ' +
+            '(актуально), "no-commits" (репо ще без жодного коміту). Для документів, записаних через ' +
+            'write_doc, рахує ТОЧНУ кількість комітів з моменту запису (trackingMethod: "commit"); для решти ' +
+            '- грубший запасний варіант за mtime файлу (trackingMethod: "mtime"). НЕ генерує/переписує ' +
+            'документацію сам - лише каже, куди дивитись, щоб AI-асистент (чи людина) писав/оновлював ' +
+            'цілеспрямовано, а не перечитував усе підряд щосесії.',
         inputSchema: {
             projectsRoot: z.string().describe('Абсолютний шлях до теки з репозиторіями (напр. "/home/sviat/Projects")'),
             docsRoot: z.string().optional()
@@ -81,6 +84,29 @@ server.registerTool(
     },
     async (args) => {
         const result = await checkReleaseDrift(args);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+);
+
+server.registerTool(
+    'write_doc',
+    {
+        title: 'Записати архітектурну документацію репо з прив\'язкою до коміту',
+        description:
+            'Записує ~/Projects/Architecture/<repo>.txt і поруч фіксує commit-хеш репозиторія на момент запису. ' +
+            'Після цього check_docs може рахувати РЕАЛЬНУ кількість комітів з моменту запису (git rev-list --count) ' +
+            'замість грубого порівняння за mtime файлу. Текст документації інструмент не генерує - лише зберігає ' +
+            'вже готовий текст (розуміння коду для документування лишається завданням AI/людини).',
+        inputSchema: {
+            projectsRoot: z.string().describe('Абсолютний шлях до теки з репозиторіями (напр. "/home/sviat/Projects")'),
+            repo: z.string().describe('Назва теки репозиторія (напр. "anylint")'),
+            content: z.string().describe('Повний текст документації для запису в <repo>.txt'),
+            docsRoot: z.string().optional()
+                .describe('Тека з .txt-документацією (типово "<projectsRoot>/Architecture")'),
+        },
+    },
+    async (args) => {
+        const result = await writeDoc(args);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 );
