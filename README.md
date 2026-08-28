@@ -2,7 +2,7 @@
 
 *[Українською](README.uk.md)*
 
-An MCP server with two tools:
+An MCP server with three tools:
 
 - `sweep_status` — a one-call snapshot of every git repository under a
   given folder: branch, uncommitted changes, unpushed commits, and
@@ -13,6 +13,12 @@ An MCP server with two tools:
   regenerate anything itself (understanding a codebase well enough to
   document it is an LLM/human job, not a script's) — it just says where
   to look, so docs get updated deliberately instead of silently rotting.
+- `check_release_drift` — for explicit (source repo, release repo) pairs,
+  counts how many commits landed in the source since the release repo's
+  last git tag, and how old the oldest one is. Cutting a release is
+  usually a manual "whenever I remember" step (tag a version, push it,
+  CI builds and publishes) — this answers "has anyone actually done that
+  lately" without checking by hand.
 
 ## Why
 
@@ -65,6 +71,18 @@ Each repo entry: `name`, `docPath`, `status` (`missing` / `stale` /
 `current` / `no-commits`), `lastCommitAt`, `docUpdatedAt`, and
 `staleBySeconds` (only on `stale`).
 
+## Tool: `check_release_drift`
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `projectsRoot` | string | — (required) | Folder with the repos |
+| `pairs` | `{source, release}[]` | — (required) | Explicit list of source→release folder-name pairs |
+| `only_attention` | boolean | `true` | Only return `drifted`; `false` returns everything including `current`/`no-tags` |
+
+Each pair entry: `source`, `release`, `status` (`drifted` / `current` /
+`no-tags`), and on `drifted`: `latestTag`, `tagCreatedAt`,
+`commitsSinceTag`, `oldestUnreleasedCommitAt`, `oldestUnreleasedAgeDays`.
+
 ## Architecture
 
 - `src/sweep.js` — all the logic: finds `.git` folders one level under
@@ -84,6 +102,20 @@ Each repo entry: `name`, `docPath`, `status` (`missing` / `stale` /
 - `test/docs.mjs` — `check_docs` against temporary, throwaway git repos
   with controlled commit/file timestamps (real `~/Projects` drifts over
   time, which would make a fixed test flaky).
+- `src/release-drift.js` — `checkReleaseDrift()`: finds the release
+  repo's most recent tag via `git for-each-ref --sort=-creatordate`
+  (sorted by actual tag time, not the semver-string sort `-v:refname`
+  would give — `v1.10` would otherwise sort before `v1.9`), then counts
+  `git log --since=@<tagTimestamp>` in the source repo. The
+  source↔release relationship isn't guessable from folder structure (no
+  general rule "folder X releases folder Y"), so the caller passes pairs
+  explicitly.
+- `test/release-drift.mjs` — temporary repos with explicit
+  `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` per commit (not relying on real
+  wall-clock gaps between commits made milliseconds apart in a test run,
+  which `git log --since`'s second-level granularity could otherwise
+  make flaky), plus one live check against the real
+  NyxilumLang→NyxilumNode pair that only asserts it doesn't throw.
 
 ## License
 

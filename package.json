@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/smoke.mjs test/docs.mjs"
+    "test": "node --test test/smoke.mjs test/docs.mjs test/release-drift.mjs"
   },
   "license": "MIT",
   "author": "Faneraiy14",

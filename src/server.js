@@ -6,8 +6,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { sweepStatus } from './sweep.js';
 import { checkDocs } from './docs.js';
+import { checkReleaseDrift } from './release-drift.js';
 
-const server = new McpServer({ name: 'workspace-status-mcp', version: '0.2.0' });
+const server = new McpServer({ name: 'workspace-status-mcp', version: '0.3.0' });
 
 server.registerTool(
     'sweep_status',
@@ -55,6 +56,31 @@ server.registerTool(
     },
     async (args) => {
         const result = await checkDocs(args);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+);
+
+server.registerTool(
+    'check_release_drift',
+    {
+        title: 'Детектор "реліз відстав від джерела"',
+        description:
+            'Для явних пар (репо з вихідним кодом, репо, що з нього тегує релізи) рахує, скільки комітів ' +
+            'з\'явилось у джерелі відколи реліз востаннє тегувався, і наскільки давно найстарший із них. ' +
+            'Зв\'язок джерело->реліз не вгадується автоматично зі структури тек - передавай пари явно ' +
+            '(напр. {source:"NyxilumLang", release:"NyxilumNode"}).',
+        inputSchema: {
+            projectsRoot: z.string().describe('Абсолютний шлях до теки з репозиторіями (напр. "/home/sviat/Projects")'),
+            pairs: z.array(z.object({
+                source: z.string().describe('Назва теки репо з вихідним кодом'),
+                release: z.string().describe('Назва теки репо, що тегує релізи з нього'),
+            })).describe('Явний список пар для перевірки'),
+            only_attention: z.boolean().optional()
+                .describe('Показати лише пари з реальним дрейфом (типово true; false - усе, включно з current)'),
+        },
+    },
+    async (args) => {
+        const result = await checkReleaseDrift(args);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 );
