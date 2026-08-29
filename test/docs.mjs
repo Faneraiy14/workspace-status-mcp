@@ -93,7 +93,7 @@ test('checkDocs: only_attention=true (типово) приховує "current"',
 });
 
 test('checkDocs: без projectsRoot кидає зрозумілу помилку', async () => {
-    await assert.rejects(() => checkDocs({}), /projectsRoot обов'язковий/);
+    await assert.rejects(() => checkDocs({}), /projectsRoot або points обов'язковий/);
 });
 
 test('checkDocs: docsRoot за замовчуванням - "<projectsRoot>/Architecture"', async () => {
@@ -134,6 +134,44 @@ test('checkDocs: документ, записаний через writeDoc(), в�
         assert.equal(afterEntry.commitsSinceWrite, 1);
     } finally {
         await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('checkDocs: points - кілька незалежних коренів проєктів+документації за один виклик', async () => {
+    // Симулює реальний кейс: репо винесене з ~/Projects на робочий стіл,
+    // документ лежить прямо там (docsRoot === сам робочий стіл), поки
+    // решта репо й далі документуються в звичному ~/Projects/Architecture.
+    const rootA = await mkdtemp(join(tmpdir(), 'points-a-'));
+    const rootB = await mkdtemp(join(tmpdir(), 'points-b-'));
+    const docsRootA = join(rootA, 'Architecture');
+    await mkdir(docsRootA, { recursive: true });
+
+    try {
+        await makeRepoWithCommit(join(rootA, 'proj-a'));
+        await writeFile(join(docsRootA, 'proj-a.txt'), 'документ А');
+
+        // rootB: docsRoot - сам rootB (документ прямо поруч із репо, не
+        // в підтеці Architecture) і документа немає взагалі - 'missing'.
+        await makeRepoWithCommit(join(rootB, 'proj-b'));
+
+        const result = await checkDocs({
+            points: [
+                { projectsRoot: rootA, docsRoot: docsRootA },
+                { projectsRoot: rootB, docsRoot: rootB },
+            ],
+            only_attention: false,
+        });
+
+        assert.equal(result.scanned, 2);
+        const byName = Object.fromEntries(result.repos.map((r) => [r.name, r]));
+        assert.equal(byName['proj-a'].status, 'current');
+        assert.equal(byName['proj-a'].projectsRoot, rootA);
+        assert.equal(byName['proj-b'].status, 'missing');
+        assert.equal(byName['proj-b'].projectsRoot, rootB);
+        assert.equal(byName['proj-b'].docPath, join(rootB, 'proj-b.txt'));
+    } finally {
+        await rm(rootA, { recursive: true, force: true });
+        await rm(rootB, { recursive: true, force: true });
     }
 });
 

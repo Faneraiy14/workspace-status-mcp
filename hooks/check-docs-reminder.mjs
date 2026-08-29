@@ -15,26 +15,38 @@
 // but is cheap (a few local git commands) and self-quiets the moment
 // write_doc actually gets called, since the doc stops being stale.
 //
-// Not tied to any one person's folder layout: optional PROJECTS_ROOT/
-// DOCS_ROOT CLI args (argv[3]/argv[4]) or env vars of the same name
-// override the ~/Projects default - anyone can point this at their own
-// layout, and repoint it later just by editing that one line, no code
-// change. CLI args (not env-var shell syntax like FOO=bar cmd) are the
-// registration form the README recommends, since "VAR=val command" only
-// works in a POSIX shell - Windows' PowerShell/cmd don't parse it that
-// way, and this hook needs to register identically on both.
+// WATCH POINTS - not everything necessarily lives under one root (a repo
+// can get moved out of ~/Projects onto the Desktop, say, with its doc
+// sitting right next to it there instead of in a central Architecture/
+// folder). Points are resolved in this priority order:
+//   1. CLI args argv[3]/argv[4] - one-off single-point override (mainly
+//      for tests/quick overrides), projectsRoot then optional docsRoot.
+//   2. The watch-points config file (default
+//      ~/.claude/workspace-status-points.json, overridable via
+//      WATCH_POINTS_FILE) - the normal, PERSISTENT way to manage this:
+//      {"points":[{"projectsRoot":"...","docsRoot":"..."},...]}. Add a
+//      point, remove one (or all), or redirect an existing one just by
+//      editing this file - no code change, no re-registering the hook.
+//   3. PROJECTS_ROOT/DOCS_ROOT env vars - single-point fallback for
+//      anyone registering the hook through a shell command instead of
+//      the args-array exec form.
+//   4. Default: a single point at <home>/Projects.
+// Each point is tried in array order; the first one whose projectsRoot
+// contains the current repo wins - so more specific/preferred points
+// should come first if points ever overlap.
 //
-// Opt-in gate: if docsRoot doesn't exist on disk AT ALL, this stays fully
-// silent - someone who's never used the Architecture-doc convention (e.g.
-// a colleague trying these tools for the first time) would otherwise get
-// nagged about EVERY repo being "missing" forever. Once the folder exists
-// (even empty - created manually, or automatically by write_doc() writing
-// its first doc), per-repo missing/stale reminders start firing normally.
+// Opt-in gate: if a point's docsRoot doesn't exist on disk AT ALL, that
+// point stays fully silent - someone who's never used the Architecture-
+// doc convention (e.g. a colleague trying these tools for the first
+// time) would otherwise get nagged about EVERY repo being "missing"
+// forever. Once the folder exists (even empty - created manually, or
+// automatically by write_doc() writing its first doc), per-repo
+// missing/stale reminders start firing normally for that point.
 
 import { checkDocs } from '../src/docs.js';
 import { homedir } from 'node:os';
 import { dirname, basename, join } from 'node:path';
-import { stat } from 'node:fs/promises';
+import { stat, readFile } from 'node:fs/promises';
 
 const MAX_WALK_UP = 6;
 
@@ -52,20 +64,55 @@ async function findRepoUnderProjects(startDir, projectsRoot) {
     return null;
 }
 
+async function loadPointsFromFile(filePath) {
+    try {
+        const parsed = JSON.parse(await readFile(filePath, 'utf8'));
+        const points = Array.isArray(parsed.points) ? parsed.points : null;
+        if (!points || points.length === 0) return null;
+        return points.filter((p) => p && typeof p.projectsRoot === 'string');
+    } catch {
+        return null; // нема файлу, пошкоджений JSON, чи points порожній/відсутній
+    }
+}
+
+async function resolvePoints() {
+    if (process.argv[3]) {
+        return [{ projectsRoot: process.argv[3], docsRoot: process.argv[4] || undefined }];
+    }
+
+    const configPath = process.env.WATCH_POINTS_FILE || join(homedir(), '.claude', 'workspace-status-points.json');
+    const fromFile = await loadPointsFromFile(configPath);
+    if (fromFile) return fromFile;
+
+    if (process.env.PROJECTS_ROOT) {
+        return [{ projectsRoot: process.env.PROJECTS_ROOT, docsRoot: process.env.DOCS_ROOT || undefined }];
+    }
+
+    return [{ projectsRoot: join(homedir(), 'Projects') }];
+}
+
 async function main() {
     const hookEventName = process.argv[2] || 'SessionStart';
-    const projectsRoot = process.argv[3] || process.env.PROJECTS_ROOT || join(homedir(), 'Projects');
-    const docsRoot = process.argv[4] || process.env.DOCS_ROOT || join(projectsRoot, 'Architecture');
+    const points = await resolvePoints();
 
+    let matchedPoint = null;
+    let repo = null;
+    for (const point of points) {
+        repo = await findRepoUnderProjects(process.cwd(), point.projectsRoot);
+        if (repo) {
+            matchedPoint = point;
+            break;
+        }
+    }
+    if (!matchedPoint) return; // жодна точка не покриває поточну робочу теку - тихо виходимо
+
+    const docsRoot = matchedPoint.docsRoot || join(matchedPoint.projectsRoot, 'Architecture');
     const docsRootExists = await stat(docsRoot).then(() => true).catch(() => false);
-    if (!docsRootExists) return; // ніхто ще не почав користуватись конвенцією на цій машині
-
-    const repo = await findRepoUnderProjects(process.cwd(), projectsRoot);
-    if (!repo) return; // не в межах <projectsRoot>/<repo> - не наш кейс, тихо виходимо
+    if (!docsRootExists) return; // ніхто ще не почав користуватись конвенцією для цієї точки
 
     let result;
     try {
-        result = await checkDocs({ projectsRoot, docsRoot, repos: [repo], only_attention: true });
+        result = await checkDocs({ projectsRoot: matchedPoint.projectsRoot, docsRoot, repos: [repo], only_attention: true });
     } catch {
         return; // check_docs сам не повинен зривати сесію користувача
     }

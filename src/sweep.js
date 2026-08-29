@@ -124,17 +124,21 @@ function needsAttention(entry) {
 
 /**
  * @param {object} opts
- * @param {string} opts.root - корінь, під яким шукати репозиторії (типово ~/Projects)
- * @param {string[]} [opts.repos] - обмежитись конкретними назвами тек замість повного сканування root
+ * @param {string} [opts.root] - корінь, під яким шукати репозиторії (типово ~/Projects) - скорочення для roots: [root]
+ * @param {string[]} [opts.roots] - кілька коренів за один виклик (напр. репо розкидані між ~/Projects і робочим столом); має пріоритет над root, якщо задано
+ * @param {string[]} [opts.repos] - обмежитись конкретними назвами тек замість повного сканування (шукає серед репо з УСІХ коренів)
  * @param {boolean} [opts.check_ci] - опитувати GitHub Actions (типово true; вимкнути для швидшого, чисто локального знімку)
  * @param {boolean} [opts.only_attention] - показати лише репо, що потребують уваги (типово true)
  */
-export async function sweepStatus({ root, repos, check_ci = true, only_attention = true } = {}) {
-    if (!root) throw new Error('root обов\'язковий (напр. "/home/sviat/Projects")');
+export async function sweepStatus({ root, roots, repos, check_ci = true, only_attention = true } = {}) {
+    const rootList = roots && roots.length ? roots : root ? [root] : null;
+    if (!rootList) throw new Error('root або roots обов\'язковий (напр. "/home/sviat/Projects")');
 
-    const allRepos = repos && repos.length
-        ? repos.map((name) => ({ name, path: join(root, name) }))
-        : await findGitRepos(root);
+    let allRepos = (await Promise.all(rootList.map((r) => findGitRepos(r)))).flat();
+    if (repos && repos.length) {
+        const wanted = new Set(repos);
+        allRepos = allRepos.filter((r) => wanted.has(r.name));
+    }
 
     const results = [];
     for (let i = 0; i < allRepos.length; i += MAX_CONCURRENCY) {

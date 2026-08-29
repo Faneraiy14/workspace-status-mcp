@@ -9,7 +9,7 @@ import { checkDocs } from './docs.js';
 import { checkReleaseDrift } from './release-drift.js';
 import { writeDoc } from './write-doc.js';
 
-const server = new McpServer({ name: 'workspace-status-mcp', version: '0.4.0' });
+const server = new McpServer({ name: 'workspace-status-mcp', version: '0.5.0' });
 
 server.registerTool(
     'sweep_status',
@@ -18,11 +18,15 @@ server.registerTool(
         description:
             'Сканує всі git-репозиторії під заданим коренем (типово ~/Projects) і одним викликом повертає, ' +
             'які з них "потребують уваги": незакомічені зміни, неопубліковані коміти, або невдалий/ще не ' +
-            'завершений останній CI-запуск. Заміняє ручний цикл git status + gh run list по кожному репо окремо.',
+            'завершений останній CI-запуск. Заміняє ручний цикл git status + gh run list по кожному репо окремо. ' +
+            'Репо розкидані між кількома коренями (напр. частина в ~/Projects, частина деінде)? Передай roots ' +
+            'замість root - скановуються всі разом, одним викликом.',
         inputSchema: {
-            root: z.string().describe('Абсолютний шлях до теки з репозиторіями (напр. "/home/sviat/Projects")'),
+            root: z.string().optional().describe('Абсолютний шлях до теки з репозиторіями (напр. "/home/sviat/Projects"). Не потрібен, якщо задано roots'),
+            roots: z.array(z.string()).optional()
+                .describe('Кілька коренів за один виклик замість одного root - результати об\'єднуються'),
             repos: z.array(z.string()).optional()
-                .describe('Обмежитись конкретними назвами тек замість повного сканування root'),
+                .describe('Обмежитись конкретними назвами тек замість повного сканування (шукає серед репо з усіх коренів)'),
             check_ci: z.boolean().optional()
                 .describe('Опитувати GitHub Actions для кожного репо (типово true; false - швидший, чисто локальний знімок без мережі)'),
             only_attention: z.boolean().optional()
@@ -46,13 +50,20 @@ server.registerTool(
             'write_doc, рахує ТОЧНУ кількість комітів з моменту запису (trackingMethod: "commit"); для решти ' +
             '- грубший запасний варіант за mtime файлу (trackingMethod: "mtime"). НЕ генерує/переписує ' +
             'документацію сам - лише каже, куди дивитись, щоб AI-асистент (чи людина) писав/оновлював ' +
-            'цілеспрямовано, а не перечитував усе підряд щосесії.',
+            'цілеспрямовано, а не перечитував усе підряд щосесії. Документація розкидана між кількома ' +
+            'незалежними парами корінь+Architecture-тека (напр. репо, винесене з ~/Projects, з документом ' +
+            'прямо поруч на новому місці)? Передай points замість projectsRoot/docsRoot.',
         inputSchema: {
-            projectsRoot: z.string().describe('Абсолютний шлях до теки з репозиторіями (напр. "/home/sviat/Projects")'),
+            projectsRoot: z.string().optional().describe('Абсолютний шлях до теки з репозиторіями (напр. "/home/sviat/Projects"). Не потрібен, якщо задано points'),
             docsRoot: z.string().optional()
-                .describe('Тека з .txt-документацією (типово "<projectsRoot>/Architecture")'),
+                .describe('Тека з .txt-документацією для projectsRoot (типово "<projectsRoot>/Architecture")'),
+            points: z.array(z.object({
+                projectsRoot: z.string().describe('Корінь із репозиторіями цієї точки'),
+                docsRoot: z.string().optional().describe('Тека з .txt-документацією цієї точки (типово "<projectsRoot>/Architecture")'),
+            })).optional()
+                .describe('Кілька незалежних пар корінь+документація за один виклик замість одної projectsRoot/docsRoot'),
             repos: z.array(z.string()).optional()
-                .describe('Обмежитись конкретними назвами тек замість повного сканування projectsRoot'),
+                .describe('Обмежитись конкретними назвами тек замість повного сканування (застосовується в межах кожної точки окремо)'),
             only_attention: z.boolean().optional()
                 .describe('Показати лише missing/stale (типово true; false - повний список, включно з current)'),
         },

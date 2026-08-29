@@ -127,13 +127,75 @@ test('check-docs-reminder: env-змінні PROJECTS_ROOT/DOCS_ROOT дозвол
         await makeRepoWithCommit(repoPath);
         await writeDoc({ projectsRoot, repo: 'proj', content: 'опис', docsRoot });
 
-        // з іншим (реальним) HOME - довести, що саме env-змінні, а не
-        // homedir(), визначають, куди дивиться хук.
+        // Фіктивний HOME - інакше на реальній машині пріоритетним джерелом
+        // стане РЕАЛЬНИЙ ~/.claude/workspace-status-points.json (якщо він
+        // існує), а не ці env-змінні; тут цілять саме в них.
         const { stdout } = await execFileAsync('node', [HOOK_SCRIPT, 'SessionStart'], {
             cwd: repoPath,
-            env: { ...process.env, PROJECTS_ROOT: projectsRoot, DOCS_ROOT: docsRoot },
+            env: { ...process.env, HOME: root, PROJECTS_ROOT: projectsRoot, DOCS_ROOT: docsRoot },
         });
         assert.equal(stdout.trim(), '', 'щойно записаний write_doc-документ - актуальний, тиша');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('check-docs-reminder: конфіг-файл watch-points (WATCH_POINTS_FILE) підтримує кілька незалежних точок', async () => {
+    // Саме той сценарій, заради якого зроблено конфіг-файл: репо на
+    // "робочому столі" (точка 2) поруч із документом прямо там, і решта
+    // репо в "Projects" (точка 1) - обидві перевіряються одним хуком, і
+    // можна прибрати/додати/перенаправити точку простою зміною JSON, без
+    // зміни коду чи перереєстрації хука.
+    const root = await mkdtemp(join(tmpdir(), 'watch-points-'));
+    const projectsRoot = join(root, 'Projects');
+    const desktopRoot = join(root, 'Desktop');
+    const configPath = join(root, 'points.json');
+
+    try {
+        await makeRepoWithCommit(join(projectsRoot, 'proj-a'));
+        await mkdir(join(projectsRoot, 'Architecture'), { recursive: true }); // конвенція в цій точці вже "в користуванні"
+
+        await makeRepoWithCommit(join(desktopRoot, 'proj-b'));
+        // desktopRoot і так існує (тільки-но створений makeRepoWithCommit) - opt-in gate для точки 2 задовольняється docsRoot === desktopRoot самим.
+
+        await writeFile(configPath, JSON.stringify({
+            points: [
+                { projectsRoot },
+                { projectsRoot: desktopRoot, docsRoot: desktopRoot },
+            ],
+        }));
+
+        const outA = await execFileAsync('node', [HOOK_SCRIPT, 'SessionStart'], {
+            cwd: join(projectsRoot, 'proj-a'),
+            env: { ...process.env, WATCH_POINTS_FILE: configPath },
+        }).then((r) => r.stdout.trim());
+        assert.notEqual(outA, '');
+        assert.match(JSON.parse(outA).hookSpecificOutput.additionalContext, /missing/);
+
+        const outB = await execFileAsync('node', [HOOK_SCRIPT, 'SessionStart'], {
+            cwd: join(desktopRoot, 'proj-b'),
+            env: { ...process.env, WATCH_POINTS_FILE: configPath },
+        }).then((r) => r.stdout.trim());
+        assert.notEqual(outB, '');
+        assert.match(JSON.parse(outB).hookSpecificOutput.additionalContext, new RegExp(`${desktopRoot.replace(/[/\\]/g, '.')}.*proj-b\\.txt`));
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('check-docs-reminder: конфіг-файл з порожнім/відсутнім points - відкат на PROJECTS_ROOT/дефолт', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'watch-points-empty-'));
+    const configPath = join(root, 'empty-points.json');
+    try {
+        await writeFile(configPath, JSON.stringify({ points: [] }));
+
+        const outsideRoot = join(root, 'nowhere');
+        await mkdir(outsideRoot, { recursive: true });
+        const out = await execFileAsync('node', [HOOK_SCRIPT, 'SessionStart'], {
+            cwd: outsideRoot,
+            env: { ...process.env, HOME: root, WATCH_POINTS_FILE: configPath },
+        }).then((r) => r.stdout.trim());
+        assert.equal(out, '', 'порожній points у файлі - як відсутній файл, тихий відкат далі по ланцюжку');
     } finally {
         await rm(root, { recursive: true, force: true });
     }

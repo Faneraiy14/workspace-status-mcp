@@ -72,11 +72,40 @@ syntax difference to worry about):
 }
 ```
 
-Defaults to `<home>/Projects` / `<home>/Projects/Architecture`. To point it
-at a different layout, add two more entries to each `args` array —
-`projectsRoot` then `docsRoot` — e.g. `["...check-docs-reminder.mjs", "SessionStart", "D:\\code", "D:\\code\\Architecture"]`
-on Windows. (`PROJECTS_ROOT`/`DOCS_ROOT` environment variables also work as
-a fallback, for anyone registering the hook through a shell command instead.)
+### Watch points
+
+Not every repo necessarily lives under one root — one might get moved out
+of `~/Projects` onto the Desktop, say, with its doc sitting right next to
+it there instead of in the central `Architecture/` folder. The hook
+resolves "watch points" (`projectsRoot` + optional `docsRoot` pairs) in
+this order, using the first point whose `projectsRoot` contains the repo
+you're currently in:
+
+1. CLI args (`args[2]`/`args[3]` after the event name) — a one-off
+   single-point override.
+2. **The watch-points config file** — `~/.claude/workspace-status-points.json`
+   by default (override the path with `WATCH_POINTS_FILE`). This is the
+   normal way to manage this day to day:
+   ```json
+   {
+     "points": [
+       { "projectsRoot": "/home/sviat/Projects" },
+       { "projectsRoot": "/home/sviat/Desktop", "docsRoot": "/home/sviat/Desktop" }
+     ]
+   }
+   ```
+   Add a point, remove one (or all of them), or redirect an existing one
+   just by editing this file — no code change, no re-registering the hook.
+   A missing file, or an empty/absent `points` array, falls through to the
+   next source below.
+3. `PROJECTS_ROOT`/`DOCS_ROOT` environment variables — single-point
+   fallback for anyone registering the hook through a shell command
+   instead of the `args` exec form.
+4. Default: a single point at `<home>/Projects`.
+
+`check_docs`/`sweep_status` accept the same idea directly as `points`/`roots`
+arguments (see below) if you want to query multiple locations from a
+conversation without touching the config file.
 
 ## Install
 
@@ -109,8 +138,9 @@ it started with).
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
-| `root` | string | — (required) | Folder to scan, one level deep (e.g. `/home/user/Projects`) |
-| `repos` | string[] | all subfolders | Limit to specific repo names instead of scanning everything |
+| `root` | string | — (required unless `roots`) | Folder to scan, one level deep (e.g. `/home/user/Projects`) |
+| `roots` | string[] | — | Several roots in one call instead of one `root` — results are merged (e.g. repos split between `~/Projects` and elsewhere) |
+| `repos` | string[] | all subfolders | Limit to specific repo names instead of scanning everything (matched across all roots) |
 | `check_ci` | boolean | `true` | Also query GitHub Actions for each repo's latest run |
 | `only_attention` | boolean | `true` | Only return repos that need a look; `false` returns everything |
 
@@ -122,12 +152,14 @@ Each repo entry: `name`, `path`, `branch`, `uncommittedFiles` (count),
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
-| `projectsRoot` | string | — (required) | Folder with the repos |
+| `projectsRoot` | string | — (required unless `points`) | Folder with the repos |
 | `docsRoot` | string | `<projectsRoot>/Architecture` | Folder with the `<repo>.txt` docs |
-| `repos` | string[] | all subfolders | Limit to specific repo names |
+| `points` | `{projectsRoot, docsRoot?}[]` | — | Several independent projectsRoot+docsRoot pairs in one call instead of one `projectsRoot`/`docsRoot` (e.g. a repo moved out of `~/Projects`, doc sitting right next to it wherever it went) |
+| `repos` | string[] | all subfolders | Limit to specific repo names (applied within each point independently) |
 | `only_attention` | boolean | `true` | Only return missing/stale; `false` returns everything including `current` |
 
-Each repo entry: `name`, `docPath`, `status` (`missing` / `stale` /
+Each repo entry: `name`, `projectsRoot` (which point it came from),
+`docPath`, `status` (`missing` / `stale` /
 `current` / `no-commits`), `trackingMethod` (`commit` if the doc was
 written via `write_doc`, `mtime` otherwise — see below), `lastCommitAt`,
 and either `commitsSinceWrite`/`writtenAtCommit`/`writtenAt` (commit
@@ -166,16 +198,20 @@ Each pair entry: `source`, `release`, `status` (`drifted` / `current` /
 ## Architecture
 
 - `src/sweep.js` — all the logic: finds `.git` folders one level under
-  `root` (exported as `findGitRepos`, reused by `docs.js`), then for each
+  a root (exported as `findGitRepos`, reused by `docs.js`), then for each
   one runs `git branch`/`git status`/`git rev-list` and (optionally)
   `gh run list` in parallel, batched at 8 repos at a time to avoid
-  hammering the GitHub API.
+  hammering the GitHub API. `sweepStatus()`'s `roots` (plural) runs
+  `findGitRepos` per root and merges the results before filtering by
+  `repos`/`only_attention` — so a repo name filter matches regardless of
+  which root it actually lives under.
 - `src/docs.js` — `checkDocs()`: prefers commit-based tracking
   (`.meta/<repo>.json`, written by `write_doc`) when available; falls
   back to comparing `git log -1 --format=%ct` against the doc file's
   mtime for docs written directly. A repo with no commits yet reports
   `no-commits` rather than being silently lumped into `missing` or
-  `current`.
+  `current`. `points` (plural) checks each independent projectsRoot+docsRoot
+  pair in turn and tags every result with which one it came from.
 - `src/write-doc.js` — `writeDoc()`: writes `<repo>.txt` plus
   `.meta/<repo>.json` (`{commitHash, writtenAt}`, `HEAD` at write time).
   Doesn't generate the text itself — understanding a codebase well
@@ -184,14 +220,21 @@ Each pair entry: `source`, `release`, `status` (`drifted` / `current` /
   stdio transport.
 - `test/smoke.mjs` — `sweep_status` against real local repos (no
   synthetic fixtures needed — the workspace itself already has clean,
-  dirty, and upstream-less repos to test against).
+  dirty, and upstream-less repos to test against), plus a `roots`
+  (plural) case against a real root and a throwaway empty one.
 - `test/docs.mjs` — `check_docs` against temporary, throwaway git repos
   with controlled commit/file timestamps (real `~/Projects` drifts over
   time, which would make a fixed test flaky), including both tracking
-  methods.
+  methods and a `points` (plural) case.
 - `test/write-doc.mjs` — `writeDoc()` against a temporary git repo:
   correct `HEAD` captured, `.meta/` created on demand, empty content
   rejected.
+- `test/hook.mjs` — `hooks/check-docs-reminder.mjs` as a real subprocess
+  (it's a CLI entry point, not a library function): silent outside any
+  watch point, silent with no `Architecture/` folder at all, reminds and
+  resolves the right repo from a nested subdirectory, the watch-points
+  config file driving two independent points at once, and an empty/absent
+  `points` array in that file falling through to the next source.
 - `src/release-drift.js` — `checkReleaseDrift()`: finds the release
   repo's most recent tag via `git for-each-ref --sort=-creatordate`
   (sorted by actual tag time, not the semver-string sort `-v:refname`
