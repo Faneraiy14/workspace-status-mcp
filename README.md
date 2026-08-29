@@ -38,6 +38,32 @@ someone actually checks it's current. Comparing "last commit" to "doc's
 mtime" turns that from a thing you have to remember into a thing you can
 just ask.
 
+## Claude Code hook: `check-docs-reminder`
+
+The tools above only help if something actually calls them. `hooks/check-docs-reminder.mjs`
+closes that gap: registered as a `SessionStart` + `Stop` hook in
+`~/.claude/settings.json`, it runs `checkDocs()` itself against whatever
+repo Claude's current working directory is under (walking up to the
+nearest git root that's a direct child of the projects folder), and — only
+when that repo's doc is missing or stale — injects a one-line reminder
+into Claude's context via `hookSpecificOutput.additionalContext`. Silent
+otherwise (clean repos, or a cwd outside the projects folder, produce no
+output). `SessionStart` covers forgetting between sessions; `Stop` (which
+fires each time Claude's turn ends) re-checks every turn within the same
+session too, and self-quiets the moment `write_doc` actually gets called.
+Deliberately non-blocking — a stale doc is worth a nudge, not a halted turn.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command",
+      "command": "node /path/to/workspace-status-mcp/hooks/check-docs-reminder.mjs SessionStart 2>/dev/null || true" }] }],
+    "Stop": [{ "hooks": [{ "type": "command",
+      "command": "node /path/to/workspace-status-mcp/hooks/check-docs-reminder.mjs Stop 2>/dev/null || true" }] }]
+  }
+}
+```
+
 ## Install
 
 ```bash
