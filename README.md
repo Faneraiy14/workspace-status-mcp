@@ -48,21 +48,35 @@ nearest git root that's a direct child of the projects folder), and — only
 when that repo's doc is missing or stale — injects a one-line reminder
 into Claude's context via `hookSpecificOutput.additionalContext`. Silent
 otherwise (clean repos, or a cwd outside the projects folder, produce no
-output). `SessionStart` covers forgetting between sessions; `Stop` (which
-fires each time Claude's turn ends) re-checks every turn within the same
-session too, and self-quiets the moment `write_doc` actually gets called.
-Deliberately non-blocking — a stale doc is worth a nudge, not a halted turn.
+output; likewise if the projects folder never had an `Architecture/` folder
+at all — someone who's never opted into this convention doesn't get nagged
+about every repo being "missing"). `SessionStart` covers forgetting between
+sessions; `Stop` (which fires each time Claude's turn ends) re-checks every
+turn within the same session too, and self-quiets the moment `write_doc`
+actually gets called. Deliberately non-blocking — a stale doc is worth a
+nudge, not a halted turn.
+
+Not hardcoded to any one person's folder layout, and works the same on
+Windows as Linux/macOS. Register it with the `args` array ("exec form" —
+spawned directly, no shell involved, so there's no bash-vs-PowerShell-vs-cmd
+syntax difference to worry about):
 
 ```json
 {
   "hooks": {
-    "SessionStart": [{ "hooks": [{ "type": "command",
-      "command": "node /path/to/workspace-status-mcp/hooks/check-docs-reminder.mjs SessionStart 2>/dev/null || true" }] }],
-    "Stop": [{ "hooks": [{ "type": "command",
-      "command": "node /path/to/workspace-status-mcp/hooks/check-docs-reminder.mjs Stop 2>/dev/null || true" }] }]
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node",
+      "args": ["/path/to/workspace-status-mcp/hooks/check-docs-reminder.mjs", "SessionStart"] }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node",
+      "args": ["/path/to/workspace-status-mcp/hooks/check-docs-reminder.mjs", "Stop"] }] }]
   }
 }
 ```
+
+Defaults to `<home>/Projects` / `<home>/Projects/Architecture`. To point it
+at a different layout, add two more entries to each `args` array —
+`projectsRoot` then `docsRoot` — e.g. `["...check-docs-reminder.mjs", "SessionStart", "D:\\code", "D:\\code\\Architecture"]`
+on Windows. (`PROJECTS_ROOT`/`DOCS_ROOT` environment variables also work as
+a fallback, for anyone registering the hook through a shell command instead.)
 
 ## Install
 
@@ -73,6 +87,23 @@ npm install
 Requires the GitHub CLI (`gh`), authenticated, if you want CI status
 (`check_ci: true`, the default). Without it CI results just come back as
 `null` per repo.
+
+Cross-platform — all four tools and the hook are plain Node.js (`path.join`,
+`os.homedir()`, no hardcoded `/`) shelling out to `git`/`gh`, both of which
+run natively on Windows too. No platform-specific code path.
+
+### Updating
+
+There's no separate build or publish step — `claude mcp add` points
+straight at this checkout's `src/server.js`, so updating is just:
+
+```bash
+git pull && npm install
+```
+
+Take effect on the next new Claude Code session (each session spawns its
+own MCP server process, so an already-running session keeps using the code
+it started with).
 
 ## Tool: `sweep_status`
 
