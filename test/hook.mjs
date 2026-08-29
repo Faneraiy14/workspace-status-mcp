@@ -229,3 +229,30 @@ test('check-docs-reminder: CLI-аргументи (рекомендована, �
         await rm(root, { recursive: true, force: true });
     }
 });
+
+test('check-docs-reminder: projectsRoot із зайвим кінцевим "/" все одно знаходить репо (регресія)', async () => {
+    // Реальний баг, знайдений живцем: path.dirname() НІКОЛИ не повертає
+    // кінцевий роздільник, тож findRepoUnderProjects() порівнював його
+    // напряму з рядком projectsRoot - зайвий "/" наприкінці (легка
+    // людська помилка при ручному редагуванні watch-points.json) робив
+    // === назавжди false, і точка тихо ніколи не спрацьовувала, без
+    // жодної помилки чи попередження.
+    const root = await mkdtemp(join(tmpdir(), 'trailing-slash-'));
+    const projectsRoot = join(root, 'Projects');
+    const repoPath = join(projectsRoot, 'proj');
+    try {
+        await makeRepoWithCommit(repoPath);
+        await mkdir(join(projectsRoot, 'Architecture'), { recursive: true });
+
+        const { stdout } = await execFileAsync(
+            'node',
+            [HOOK_SCRIPT, 'SessionStart', projectsRoot + '/', join(projectsRoot, 'Architecture') + '/'],
+            { cwd: repoPath, env: process.env }
+        );
+        const out = stdout.trim();
+        assert.notEqual(out, '', 'з кінцевим слешем у projectsRoot точка мусить спрацьовувати так само, як без нього');
+        assert.match(JSON.parse(out).hookSpecificOutput.additionalContext, /missing/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});

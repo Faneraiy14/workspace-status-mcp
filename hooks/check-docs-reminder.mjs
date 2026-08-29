@@ -50,6 +50,23 @@ import { stat, readFile } from 'node:fs/promises';
 
 const MAX_WALK_UP = 6;
 
+// path.dirname() ніколи не повертає кінцевий роздільник (окрім самого
+// кореня файлової системи), тож findRepoUnderProjects() порівнює його
+// напряму з рядком - projectsRoot із зайвим кінцевим "/" чи "\"
+// (легка людська помилка при ручному редагуванні конфіг-файлу) робив
+// би === завжди false, і точка тихо ніколи б не спрацьовувала, без
+// жодної помилки чи попередження. Перевірено живим відтворенням.
+function stripTrailingSep(p) {
+    return p.length > 1 ? p.replace(/[\\/]+$/, '') : p;
+}
+
+function normalizePoint(point) {
+    return {
+        projectsRoot: stripTrailingSep(point.projectsRoot),
+        docsRoot: point.docsRoot ? stripTrailingSep(point.docsRoot) : point.docsRoot,
+    };
+}
+
 async function findRepoUnderProjects(startDir, projectsRoot) {
     let dir = startDir;
     for (let i = 0; i < MAX_WALK_UP; i++) {
@@ -93,7 +110,7 @@ async function resolvePoints() {
 
 async function main() {
     const hookEventName = process.argv[2] || 'SessionStart';
-    const points = await resolvePoints();
+    const points = (await resolvePoints()).map(normalizePoint);
 
     let matchedPoint = null;
     let repo = null;
