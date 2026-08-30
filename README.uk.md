@@ -2,7 +2,7 @@
 
 *[English](README.md)*
 
-MCP-сервер з чотирма інструментами:
+MCP-сервер з п'ятьма інструментами:
 
 - `sweep_status` — знімок стану всіх git-репозиторіїв у заданій теці
   одним викликом: гілка, незакомічені зміни, неопубліковані коміти й
@@ -23,6 +23,14 @@ MCP-сервер з чотирма інструментами:
   реліз - зазвичай ручний крок "коли згадаю" (тег версії, пуш, CI
   збирає й публікує) - цей інструмент відповідає "чи хтось це реально
   робив останнім часом" без ручної перевірки.
+- `check_pr_status` — знімок стану кількох GitHub PR одним викликом:
+  state, mergeable, review decision, статус CI, і — окремо — скільки
+  top-level і inline review-коментарів у кожного, з автором/часом
+  останнього кожного типу. Top-level (issue) коментарі й inline (review)
+  коментарі — дві РІЗНІ сутності GitHub API; PR, який рецензували лише
+  inline-коментарями, виглядає незачепленим, якщо перевіряти тільки
+  тіло рев'ю. Заміняє ручний цикл `gh pr view` + два окремих `gh api
+  .../comments` на кожен PR.
 
 ## Навіщо
 
@@ -120,7 +128,7 @@ npm install
 автентифікований GitHub CLI (`gh`). Без нього результат CI просто
 повертається як `null` для кожного репо.
 
-Кросплатформно — усі чотири інструменти й хук написані на чистому Node.js
+Кросплатформно — усі п'ять інструментів і хук написані на чистому Node.js
 (`path.join`, `os.homedir()`, жодного хардкоду `/`), а зовнішні
 команди - `git`/`gh` - працюють нативно і на Windows. Жодного
 платформо-специфічного коду.
@@ -196,6 +204,26 @@ git pull && npm install
 Кожен запис пари: `source`, `release`, `status` (`drifted` / `current` /
 `no-tags`), і при `drifted`: `latestTag`, `tagCreatedAt`,
 `commitsSinceTag`, `oldestUnreleasedCommitAt`, `oldestUnreleasedAgeDays`.
+
+## Інструмент: `check_pr_status`
+
+| Аргумент | Тип | За замовчуванням | Значення |
+|---|---|---|---|
+| `prs` | `{repo, number}[]` | — (обов'язково) | PR для перевірки, `repo` у форматі `"власник/назва"` |
+| `only_attention` | boolean | `true` | Лише PR у стані `DIRTY` (конфлікт), `CHANGES_REQUESTED`, чи з провальним CI-check'ом; `false` — усе |
+
+Кожен запис: `title`, `url`, `state`, `mergedAt`, `mergeable`,
+`mergeStateStatus`, `reviewDecision`, `ciStatus` (`success` / `failure` /
+`pending` / `none`), `comments` (`{total, last: {author, at} | null}` —
+top-level issue-коментарі), `reviewComments` (та сама форма, inline
+review-коментарі), `needsAttention`. PR, який не вдалось завантажити
+(поганий repo/number), дає `{repo, number, error}` замість того, щоб
+завалити весь виклик.
+
+`classifyPr()` у `src/pr-status.js` — чиста частина рішення (з уже
+завантажених сирих даних, без мережі) - тестується на фікстурах окремо
+від реальних `gh`-викликів, які натомість перевірені проти реальних
+змерджених PR.
 
 ## Архітектура
 

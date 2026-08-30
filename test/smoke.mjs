@@ -5,10 +5,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { sweepStatus } from '../src/sweep.js';
+
+const execFileAsync = promisify(execFile);
 
 const ROOT = '/home/sviat/Projects';
 
@@ -32,10 +36,24 @@ test('sweepStatus: only_attention=false повертає репо навіть �
     assert.ok('uncommittedFiles' in result.repos[0]);
 });
 
-test('sweepStatus: репозиторій без upstream (projects, порожній) не падає, hasUpstream=false', async () => {
-    const result = await sweepStatus({ root: ROOT, repos: ['projects'], only_attention: false, check_ci: false });
-    assert.equal(result.repos[0].hasUpstream, false);
-    assert.equal(result.repos[0].ahead, null);
+test('sweepStatus: репозиторій без upstream (порожній, локальний) не падає, hasUpstream=false', async () => {
+    // Раніше покладався на конкретну теку в ~/Projects, яка колись
+    // випадково була порожнім репо без upstream - крихко (ламається,
+    // щойно ту теку перейменують чи заповнять реальним вмістом, як
+    // сталось у цій самій сесії). Тепер - власний тимчасовий фікстур-
+    // репо, той самий підхід, що вже нижче для "roots" - незалежний
+    // від реального стану ~/Projects.
+    const tmpRoot = await mkdtemp(join(tmpdir(), 'sweep-no-upstream-'));
+    const repoPath = join(tmpRoot, 'empty-repo');
+    try {
+        await mkdir(repoPath);
+        await execFileAsync('git', ['init', '-q'], { cwd: repoPath });
+        const result = await sweepStatus({ root: tmpRoot, repos: ['empty-repo'], only_attention: false, check_ci: false });
+        assert.equal(result.repos[0].hasUpstream, false);
+        assert.equal(result.repos[0].ahead, null);
+    } finally {
+        await rm(tmpRoot, { recursive: true, force: true });
+    }
 });
 
 test('sweepStatus: check_ci=true додає поле ci (успішний прогін у secretscan)', async () => {

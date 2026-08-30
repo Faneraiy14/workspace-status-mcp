@@ -8,6 +8,7 @@ import { sweepStatus } from './sweep.js';
 import { checkDocs } from './docs.js';
 import { checkReleaseDrift } from './release-drift.js';
 import { writeDoc } from './write-doc.js';
+import { checkPrStatus } from './pr-status.js';
 
 const server = new McpServer({ name: 'workspace-status-mcp', version: '0.5.0' });
 
@@ -118,6 +119,32 @@ server.registerTool(
     },
     async (args) => {
         const result = await writeDoc(args);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+);
+
+server.registerTool(
+    'check_pr_status',
+    {
+        title: 'Знімок стану кількох GitHub PR одним викликом',
+        description:
+            'Для списку PR (repo+number) повертає одним викликом: state, mergeable, mergeStateStatus, ' +
+            'reviewDecision, статус CI-перевірок, і ОКРЕМО кількість top-level (issue) і inline (review) ' +
+            'коментарів разом з автором/часом останнього кожного типу. Top-level і inline коментарі GitHub - ' +
+            'ДВІ окремі сутності з різними API-точками, тому рахуються тут окремо, а не як одна сума - легко ' +
+            'пропустити inline-треди, якщо дивитись лише на review body. Заміняє ручний цикл `gh pr view` + ' +
+            '`gh api .../comments` по кожному PR окремо.',
+        inputSchema: {
+            prs: z.array(z.object({
+                repo: z.string().describe('Репозиторій у форматі "власник/назва", напр. "cyklokoalicia/OpenSourceBikeShare"'),
+                number: z.number().int().positive().describe('Номер PR'),
+            })).min(1).describe('Список PR для перевірки'),
+            only_attention: z.boolean().optional()
+                .describe('Показати лише PR, що потребують уваги: DIRTY/CHANGES_REQUESTED/CI failure (типово true; false - усі, включно з чистими)'),
+        },
+    },
+    async (args) => {
+        const result = await checkPrStatus(args);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 );

@@ -1,14 +1,14 @@
 {
   "name": "workspace-status-mcp",
   "version": "0.5.0",
-  "description": "MCP-сервер: sweep_status (знімок git+CI по всіх репо) і check_docs (детектор застарілої/відсутньої архітектурної документації).",
+  "description": "MCP-сервер: sweep_status (знімок git+CI по всіх репо), check_docs (детектор застарілої/відсутньої архітектурної документації) і check_pr_status (знімок стану кількох GitHub PR).",
   "type": "module",
   "bin": {
     "workspace-status-mcp": "./src/server.js"
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/smoke.mjs test/docs.mjs test/release-drift.mjs"
+    "test": "node --test test/smoke.mjs test/docs.mjs test/release-drift.mjs test/pr-status.mjs"
   },
   "license": "MIT",
   "author": "Faneraiy14",

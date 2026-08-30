@@ -2,7 +2,7 @@
 
 *[Українською](README.uk.md)*
 
-An MCP server with four tools:
+An MCP server with five tools:
 
 - `sweep_status` — a one-call snapshot of every git repository under a
   given folder: branch, uncommitted changes, unpushed commits, and
@@ -22,6 +22,14 @@ An MCP server with four tools:
   usually a manual "whenever I remember" step (tag a version, push it,
   CI builds and publishes) — this answers "has anyone actually done that
   lately" without checking by hand.
+- `check_pr_status` — a one-call snapshot of several GitHub PRs at once:
+  state, mergeable, review decision, CI status, and — separately — how
+  many top-level and inline review comments each has, with the latest
+  author/timestamp of each kind. Top-level (issue) comments and inline
+  (review) comments are two genuinely different GitHub API resources; a
+  PR reviewed with inline comments only can look untouched if you check
+  just the review body. Replaces looping `gh pr view` + two separate
+  `gh api .../comments` calls per PR.
 
 ## Why
 
@@ -117,7 +125,7 @@ Requires the GitHub CLI (`gh`), authenticated, if you want CI status
 (`check_ci: true`, the default). Without it CI results just come back as
 `null` per repo.
 
-Cross-platform — all four tools and the hook are plain Node.js (`path.join`,
+Cross-platform — all five tools and the hook are plain Node.js (`path.join`,
 `os.homedir()`, no hardcoded `/`) shelling out to `git`/`gh`, both of which
 run natively on Windows too. No platform-specific code path.
 
@@ -195,6 +203,26 @@ Each pair entry: `source`, `release`, `status` (`drifted` / `current` /
 `no-tags`), and on `drifted`: `latestTag`, `tagCreatedAt`,
 `commitsSinceTag`, `oldestUnreleasedCommitAt`, `oldestUnreleasedAgeDays`.
 
+## Tool: `check_pr_status`
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `prs` | `{repo, number}[]` | — (required) | PRs to check, `repo` as `"owner/name"` |
+| `only_attention` | boolean | `true` | Only return PRs that are `DIRTY` (merge conflict), `CHANGES_REQUESTED`, or have a failing CI check; `false` returns everything |
+
+Each entry: `title`, `url`, `state`, `mergedAt`, `mergeable`,
+`mergeStateStatus`, `reviewDecision`, `ciStatus` (`success` / `failure` /
+`pending` / `none`), `comments` (`{total, last: {author, at} | null}` —
+top-level issue comments), `reviewComments` (same shape, inline review
+comments), `needsAttention`. A PR that fails to fetch (bad repo/number)
+gets `{repo, number, error}` instead of throwing and losing the rest of
+the batch.
+
+`classifyPr()` in `src/pr-status.js` is the pure decision logic (given
+already-fetched raw data, no network) — unit-tested with fixtures
+separately from the real `gh` calls, which are verified against actual
+merged PRs instead.
+
 ## Architecture
 
 - `src/sweep.js` — all the logic: finds `.git` folders one level under
@@ -216,12 +244,30 @@ Each pair entry: `source`, `release`, `status` (`drifted` / `current` /
   `.meta/<repo>.json` (`{commitHash, writtenAt}`, `HEAD` at write time).
   Doesn't generate the text itself — understanding a codebase well
   enough to document it stays an LLM/human job.
-- `src/server.js` — registers all four tools with the MCP SDK over the
+- `src/pr-status.js` — `checkPrStatus()`: fetches `gh pr view` plus both
+  comment endpoints (`issues/{n}/comments` for top-level,
+  `pulls/{n}/comments` for inline review comments — deliberately
+  separate, since a PR reviewed only with inline comments looks
+  untouched if you check just the review body) per PR, batched at 6 at
+  a time. `classifyPr()` is the pure part (decides `needsAttention`,
+  picks the latest comment of each kind) — no network, so it's tested
+  with fixtures independently of the real `gh` calls.
+- `src/server.js` — registers all five tools with the MCP SDK over the
   stdio transport.
-- `test/smoke.mjs` — `sweep_status` against real local repos (no
-  synthetic fixtures needed — the workspace itself already has clean,
-  dirty, and upstream-less repos to test against), plus a `roots`
-  (plural) case against a real root and a throwaway empty one.
+- `test/smoke.mjs` — `sweep_status` against real local repos for the
+  clean/dirty cases (no synthetic fixtures needed — the workspace itself
+  already has both to test against), a throwaway local git repo for the
+  no-upstream case (an incidental empty folder under `~/Projects` used
+  to serve this, until it got renamed away mid-session and silently broke
+  the test — not something to depend on again), plus a `roots` (plural)
+  case against a real root and a throwaway empty one.
+- `test/pr-status.mjs` — `classifyPr()` against fixture data (clean/DIRTY/
+  CHANGES_REQUESTED/CI-failure/CI-pending, comments counted separately per
+  kind, a merged PR never flagged regardless of leftover `DIRTY` state),
+  plus `checkPrStatus()` against real, permanently-merged PRs in two
+  different repos (`mergedAt`/`state` won't change), a multi-PR batch call,
+  and a nonexistent PR number returning `{error}` in its own entry instead
+  of failing the whole batch.
 - `test/docs.mjs` — `check_docs` against temporary, throwaway git repos
   with controlled commit/file timestamps (real `~/Projects` drifts over
   time, which would make a fixed test flaky), including both tracking
