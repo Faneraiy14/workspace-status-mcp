@@ -180,8 +180,9 @@ tracking) or `docUpdatedAt`/`staleBySeconds` (mtime tracking, only on
 |---|---|---|---|
 | `projectsRoot` | string | — (required) | Folder with the repos |
 | `repo` | string | — (required) | Repo folder name (e.g. `"anylint"`) |
-| `content` | string | — (required) | Full text to write to `<repo>.txt` |
+| `content` | string | — (required) | With `mode:"replace"` - full text of `<repo>.txt`. With `mode:"append"` - just the new chunk |
 | `docsRoot` | string | `<projectsRoot>/Architecture` | Folder with the `<repo>.txt` docs |
+| `mode` | `"replace"` \| `"append"` | `"replace"` | `"append"` appends `content` to the end of the existing file (one blank-line separator) |
 
 Writes `<repo>.txt` and, next to it, `.meta/<repo>.json` with the repo's
 `HEAD` commit hash at write time. `check_docs` then reports the *exact*
@@ -190,6 +191,12 @@ instead of the coarser mtime-vs-last-commit-time comparison — the same
 pattern `check_release_drift` already uses for source→release drift. Docs
 written directly (e.g. via a plain file write, not this tool) keep using
 mtime tracking — there's no meta file to compare against.
+
+`mode:"append"` exists for one specific case: adding a single new dated
+entry to an already-large (hundreds/thousands of lines) doc file without
+first reading the whole file into context and sending it back unchanged
+just to append one paragraph — that pattern used to waste a lot of
+tokens for no reason.
 
 ## Tool: `check_release_drift`
 

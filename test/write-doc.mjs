@@ -74,3 +74,53 @@ test('writeDoc: порожній content відхиляється', async () => 
 test('writeDoc: без repo кидає зрозумілу помилку', async () => {
     await assert.rejects(() => writeDoc({ projectsRoot: '/tmp', content: 'x' }), /repo обов'язковий/);
 });
+
+test('writeDoc mode:"append" - на порожньому місці поводиться як replace (без зайвого порожнього рядка)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'write-doc-test-'));
+    try {
+        await makeRepoWithCommit(join(root, 'proj'));
+        const result = await writeDoc({ projectsRoot: root, repo: 'proj', content: 'перший запис', mode: 'append' });
+        assert.equal(await readFile(result.docPath, 'utf8'), 'перший запис');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('writeDoc mode:"append" - дописує з ОДНИМ порожнім рядком-роздільником, не чіпаючи старий текст', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'write-doc-test-'));
+    try {
+        await makeRepoWithCommit(join(root, 'proj'));
+        const docsRoot = join(root, 'Architecture');
+        await writeDoc({ projectsRoot: root, repo: 'proj', content: 'старий запис', docsRoot });
+        const result = await writeDoc({ projectsRoot: root, repo: 'proj', content: 'новий запис', docsRoot, mode: 'append' });
+        assert.equal(await readFile(result.docPath, 'utf8'), 'старий запис\n\nновий запис');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('writeDoc mode:"append" - зайві завершальні переноси рядків у старому вмісті не накопичуються', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'write-doc-test-'));
+    try {
+        await makeRepoWithCommit(join(root, 'proj'));
+        const docsRoot = join(root, 'Architecture');
+        await writeDoc({ projectsRoot: root, repo: 'proj', content: 'старий запис\n\n\n', docsRoot });
+        const result = await writeDoc({ projectsRoot: root, repo: 'proj', content: 'новий запис', docsRoot, mode: 'append' });
+        assert.equal(await readFile(result.docPath, 'utf8'), 'старий запис\n\nновий запис');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('writeDoc: невідомий mode кидає зрозумілу помилку', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'write-doc-test-'));
+    try {
+        await makeRepoWithCommit(join(root, 'proj'));
+        await assert.rejects(
+            () => writeDoc({ projectsRoot: root, repo: 'proj', content: 'x', mode: 'wat' }),
+            /mode має бути "replace" чи "append"/
+        );
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
