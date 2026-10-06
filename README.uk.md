@@ -301,6 +301,16 @@ review-коментарі), `needsAttention`. PR, який не вдалось �
   могла б зробити тест нестабільним), плюс один живий тест на реальній
   парі NyxilumLang→NyxilumNode, що лише перевіряє відсутність падіння.
 
+## Docker
+
+```bash
+docker build -t workspace-status-mcp .
+docker run -i --rm -e GH_TOKEN=<token> -v "$HOME/Projects:/projects" workspace-status-mcp
+```
+
+Сервер працює з MCP через stdio, тож `-i` обов'язковий. Потрібно: примонтована тека з проєктами (передавай `/projects` як `projectsRoot`) і `GH_TOKEN` для перевірок PR і релізів.
+У конфігу MCP-клієнта: `"command": "docker"` з тими самими аргументами.
+
 ## Ліцензія
 
 MIT — Faneraiy14.

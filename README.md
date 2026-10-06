@@ -303,6 +303,16 @@ merged PRs instead.
   make flaky), plus one live check against the real
   NyxilumLang→NyxilumNode pair that only asserts it doesn't throw.
 
+## Docker
+
+```bash
+docker build -t workspace-status-mcp .
+docker run -i --rm -e GH_TOKEN=<token> -v "$HOME/Projects:/projects" workspace-status-mcp
+```
+
+The server speaks MCP over stdio, so keep `-i`. Needs: your projects folder mounted (pass `/projects` as `projectsRoot`) and `GH_TOKEN` for PR/release checks.
+In an MCP client config use `"command": "docker"` with the same arguments.
+
 ## License
 
 MIT — Faneraiy14.
