@@ -46,7 +46,7 @@
 import { checkDocs } from '../src/docs.js';
 import { homedir } from 'node:os';
 import { dirname, basename, join } from 'node:path';
-import { stat, readFile } from 'node:fs/promises';
+import { stat, readFile, writeFile, mkdir } from 'node:fs/promises';
 
 const MAX_WALK_UP = 6;
 
@@ -108,6 +108,39 @@ async function resolvePoints() {
     return [{ projectsRoot: join(homedir(), 'Projects') }];
 }
 
+// Лише для Stop: те саме нагадування кожного ходу, поки документ застарілий, - це сотні
+// токенів щоходу даремно. Нагадуємо при першому Stop сесії для репо, далі раз на
+// REMIND_EVERY Stop-ів (SessionStart нагадує завжди). Стан - у файлі на сесію.
+const REMIND_EVERY = Number(process.env.REMIND_EVERY) || 10;
+
+async function readStdinJson(timeoutMs = 300) {
+    if (process.stdin.isTTY) return null;
+    return await new Promise((resolve) => {
+        let buf = '';
+        const done = () => { process.stdin.destroy(); try { resolve(buf.trim() ? JSON.parse(buf) : null); } catch { resolve(null); } };
+        const t = setTimeout(done, timeoutMs);
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (d) => { buf += d; });
+        process.stdin.on('end', () => { clearTimeout(t); done(); });
+        process.stdin.on('error', () => { clearTimeout(t); resolve(null); });
+    });
+}
+
+async function shouldRemind(hookEventName, repo) {
+    if (hookEventName !== 'Stop') return true;
+    const input = await readStdinJson();
+    const sid = input && typeof input.session_id === 'string' ? input.session_id.replace(/[^\w.-]/g, '_') : null;
+    if (!sid) return true; // не знаємо сесії - краще нагадати, ніж промовчати
+    const dir = process.env.HOOK_STATE_DIR || join(homedir(), '.claude', 'workspace-status-state');
+    const file = join(dir, `${sid}.json`);
+    let state = {};
+    try { state = JSON.parse(await readFile(file, 'utf8')); } catch { /* нова сесія */ }
+    const n = (state[repo] || 0) + 1;
+    state[repo] = n;
+    try { await mkdir(dir, { recursive: true }); await writeFile(file, JSON.stringify(state)); } catch { /* не критично */ }
+    return n === 1 || n % REMIND_EVERY === 1;
+}
+
 async function main() {
     const hookEventName = process.argv[2] || 'SessionStart';
     const points = (await resolvePoints()).map(normalizePoint);
@@ -136,6 +169,8 @@ async function main() {
 
     const entry = result.repos[0];
     if (!entry) return; // 'current' чи 'no-commits' - only_attention їх уже відфільтрував
+
+    if (!(await shouldRemind(hookEventName, repo))) return;
 
     const detail = entry.trackingMethod === 'commit'
         ? `${entry.commitsSinceWrite} комітів з моменту останнього write_doc`

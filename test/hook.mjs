@@ -256,3 +256,27 @@ test('check-docs-reminder: projectsRoot із зайвим кінцевим "/" �
         await rm(root, { recursive: true, force: true });
     }
 });
+
+test('check-docs-reminder: Stop нагадує на 1-му ході сесії, тоді рідко (REMIND_EVERY), SessionStart - завжди', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'throttle-'));
+    const projectsRoot = join(root, 'Projects');
+    const docsRoot = join(projectsRoot, 'Architecture');
+    const repoPath = join(projectsRoot, 'proj');
+    try {
+        await makeRepoWithCommit(repoPath);
+        await mkdir(docsRoot, { recursive: true }); // opt-in відкрито, а документа нема -> 'missing'
+        const env = { ...process.env, HOME: root, PROJECTS_ROOT: projectsRoot, DOCS_ROOT: docsRoot, HOOK_STATE_DIR: join(root, 'state'), REMIND_EVERY: '4' };
+        const stop = (sid) => new Promise((resolve, reject) => {
+            const c = execFile('node', [HOOK_SCRIPT, 'Stop'], { cwd: repoPath, env }, (err, stdout) => err ? reject(err) : resolve(stdout.trim()));
+            c.stdin.end(JSON.stringify({ session_id: sid }));
+        });
+        const fired = [];
+        for (let i = 1; i <= 10; i++) if (await stop('S1')) fired.push(i);
+        assert.deepEqual(fired, [1, 5, 9], 'нагадує на 1, 5, 9 ході (кожен 4-й після першого)');
+        assert.ok(await stop('S2'), 'інша сесія має власний лічильник: перший Stop нагадує');
+        const start = await execFileAsync('node', [HOOK_SCRIPT, 'SessionStart'], { cwd: repoPath, env });
+        assert.ok(start.stdout.trim(), 'SessionStart не тротлиться');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});

@@ -37,7 +37,7 @@ server.registerTool(
     },
     async (args) => {
         const result = await sweepStatus(args);
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
 );
 
@@ -72,7 +72,7 @@ server.registerTool(
     },
     async (args) => {
         const result = await checkDocs(args);
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
 );
 
@@ -97,7 +97,7 @@ server.registerTool(
     },
     async (args) => {
         const result = await checkReleaseDrift(args);
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
 );
 
@@ -129,7 +129,7 @@ server.registerTool(
     },
     async (args) => {
         const result = await writeDoc(args);
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
 );
 
@@ -155,7 +155,7 @@ server.registerTool(
     },
     async (args) => {
         const result = await checkPrStatus(args);
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
 );
 
