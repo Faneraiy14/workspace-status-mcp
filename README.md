@@ -2,7 +2,7 @@
 
 *[Українською](README.uk.md)*
 
-An MCP server with five tools:
+An MCP server with six tools:
 
 - `sweep_status` — a one-call snapshot of every git repository under a
   given folder: branch, uncommitted changes, unpushed commits, and
@@ -22,6 +22,11 @@ An MCP server with five tools:
   usually a manual "whenever I remember" step (tag a version, push it,
   CI builds and publishes) — this answers "has anyone actually done that
   lately" without checking by hand.
+- `read_doc` — reads `Architecture/<repo>.txt` in PARTS instead of the whole file
+  (the big ones are 100+ KB): no arguments → a numbered table of contents;
+  `section` (number or title fragment) → one section; `query` → only the matching
+  lines with context. Recognises underlined, `##`, ALL-CAPS and dated-entry
+  headings.
 - `check_pr_status` — a one-call snapshot of several GitHub PRs at once:
   state, mergeable, review decision, CI status, and — separately — how
   many top-level and inline review comments each has, with the latest
@@ -125,7 +130,7 @@ Requires the GitHub CLI (`gh`), authenticated, if you want CI status
 (`check_ci: true`, the default). Without it CI results just come back as
 `null` per repo.
 
-Cross-platform — all five tools and the hook are plain Node.js (`path.join`,
+Cross-platform — all six tools and the hook are plain Node.js (`path.join`,
 `os.homedir()`, no hardcoded `/`) shelling out to `git`/`gh`, both of which
 run natively on Windows too. No platform-specific code path.
 
@@ -259,7 +264,7 @@ merged PRs instead.
   a time. `classifyPr()` is the pure part (decides `needsAttention`,
   picks the latest comment of each kind) — no network, so it's tested
   with fixtures independently of the real `gh` calls.
-- `src/server.js` — registers all five tools with the MCP SDK over the
+- `src/server.js` — registers all six tools with the MCP SDK over the
   stdio transport.
 - `test/smoke.mjs` — `sweep_status` against real local repos for the
   clean/dirty cases (no synthetic fixtures needed — the workspace itself

@@ -9,8 +9,9 @@ import { checkDocs } from './docs.js';
 import { checkReleaseDrift } from './release-drift.js';
 import { writeDoc } from './write-doc.js';
 import { checkPrStatus } from './pr-status.js';
+import { readDoc } from './read-doc.js';
 
-const server = new McpServer({ name: 'workspace-status-mcp', version: '0.5.0' });
+const server = new McpServer({ name: 'workspace-status-mcp', version: '0.6.0' });
 
 server.registerTool(
     'sweep_status',
@@ -155,6 +156,31 @@ server.registerTool(
     async (args) => {
         const result = await checkPrStatus(args);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+);
+
+server.registerTool(
+    'read_doc',
+    {
+        title: 'Прочитати Architecture/<repo>.txt частинами (зміст / розділ / пошук)',
+        description:
+            'Читає документацію репо ЧАСТКАМИ замість цілого файлу (NyxilumLang.txt ~147 КБ, NyxOS.txt ~137 КБ). ' +
+            'Без section/query - ЗМІСТ (нумеровані розділи з діапазоном рядків і розміром). section (номер зі змісту ' +
+            'або фрагмент заголовка) - текст одного розділу. query - лише рядки-збіги з контекстом і назвою розділу. ' +
+            'Користуйся замість Read цілого .txt, коли треба один абзац.',
+        inputSchema: {
+            repo: z.string().describe('Назва теки репо (напр. "NyxOS")'),
+            section: z.union([z.string(), z.number()]).optional().describe('Номер розділу зі змісту або фрагмент його заголовка'),
+            query: z.string().optional().describe('Слова для пошуку (усі мають бути в рядку, без урахування регістру)'),
+            max_chars: z.number().int().optional().describe('Ліміт відповіді, 500-40000 (типово 6000)'),
+            offset: z.number().int().optional().describe('З якого символу продовжити, якщо розділ було обрізано'),
+            projectsRoot: z.string().optional().describe('Типово ~/Projects'),
+            docsRoot: z.string().optional().describe('Типово "<projectsRoot>/Architecture"'),
+        },
+    },
+    async (args) => {
+        const result = await readDoc(args);
+        return { content: [{ type: 'text', text: result.text }], isError: result.ok === false };
     }
 );
 
