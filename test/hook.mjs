@@ -33,7 +33,7 @@ async function makeRepoWithCommit(repoPath) {
 
 async function runHook(cwd, event = 'SessionStart') {
     try {
-        const { stdout } = await execFileAsync('node', [HOOK_SCRIPT, event], { cwd, env: { ...process.env } });
+        const { stdout } = await execFileAsync('node', [HOOK_SCRIPT, event], { cwd, env: { ...process.env, ARCH_BACKUP: '0' } });
         return stdout.trim();
     } catch (err) {
         return { error: err };
@@ -73,15 +73,15 @@ test('check-docs-reminder: нагадує для застарілого (missing
     try {
         await makeRepoWithCommit(repoPath);
         await mkdir(subDir, { recursive: true });
-        // Architecture/ вже існує (конвенція в цьому "домі" вже в
+        // інший репо вже має .arch/ (конвенція в цьому "домі" вже в
         // користуванні) - лише для ЦЬОГО репо документа ще нема.
-        await mkdir(join(projectsRoot, 'Architecture'), { recursive: true });
+        await mkdir(join(projectsRoot, 'other', '.arch'), { recursive: true });
 
         const out = await runHookWithHome(subDir, root, 'Stop');
         assert.notEqual(out, '');
         const parsed = JSON.parse(out);
         assert.equal(parsed.hookSpecificOutput.hookEventName, 'Stop');
-        assert.match(parsed.hookSpecificOutput.additionalContext, /proj\.txt/);
+        assert.match(parsed.hookSpecificOutput.additionalContext, /proj.\.arch/);
         assert.match(parsed.hookSpecificOutput.additionalContext, /missing/);
     } finally {
         await rm(root, { recursive: true, force: true });
@@ -93,7 +93,7 @@ test('check-docs-reminder: нагадує для застарілого (missing
 async function runHookWithHome(cwd, fakeHome, event = 'SessionStart') {
     const { stdout } = await execFileAsync('node', [HOOK_SCRIPT, event], {
         cwd,
-        env: { ...process.env, HOME: fakeHome },
+        env: { ...process.env, ARCH_BACKUP: '0', HOME: fakeHome },
     });
     return stdout.trim();
 }
@@ -132,7 +132,7 @@ test('check-docs-reminder: env-змінні PROJECTS_ROOT/DOCS_ROOT дозвол
         // існує), а не ці env-змінні; тут цілять саме в них.
         const { stdout } = await execFileAsync('node', [HOOK_SCRIPT, 'SessionStart'], {
             cwd: repoPath,
-            env: { ...process.env, HOME: root, PROJECTS_ROOT: projectsRoot, DOCS_ROOT: docsRoot },
+            env: { ...process.env, ARCH_BACKUP: '0', HOME: root, PROJECTS_ROOT: projectsRoot, DOCS_ROOT: docsRoot },
         });
         assert.equal(stdout.trim(), '', 'щойно записаний write_doc-документ - актуальний, тиша');
     } finally {
@@ -153,7 +153,7 @@ test('check-docs-reminder: конфіг-файл watch-points (WATCH_POINTS_FILE
 
     try {
         await makeRepoWithCommit(join(projectsRoot, 'proj-a'));
-        await mkdir(join(projectsRoot, 'Architecture'), { recursive: true }); // конвенція в цій точці вже "в користуванні"
+        await mkdir(join(projectsRoot, 'other', '.arch'), { recursive: true }); // конвенція в цій точці вже "в користуванні"
 
         await makeRepoWithCommit(join(desktopRoot, 'proj-b'));
         // desktopRoot і так існує (тільки-но створений makeRepoWithCommit) - opt-in gate для точки 2 задовольняється docsRoot === desktopRoot самим.
@@ -167,14 +167,14 @@ test('check-docs-reminder: конфіг-файл watch-points (WATCH_POINTS_FILE
 
         const outA = await execFileAsync('node', [HOOK_SCRIPT, 'SessionStart'], {
             cwd: join(projectsRoot, 'proj-a'),
-            env: { ...process.env, WATCH_POINTS_FILE: configPath },
+            env: { ...process.env, ARCH_BACKUP: '0', WATCH_POINTS_FILE: configPath },
         }).then((r) => r.stdout.trim());
         assert.notEqual(outA, '');
         assert.match(JSON.parse(outA).hookSpecificOutput.additionalContext, /missing/);
 
         const outB = await execFileAsync('node', [HOOK_SCRIPT, 'SessionStart'], {
             cwd: join(desktopRoot, 'proj-b'),
-            env: { ...process.env, WATCH_POINTS_FILE: configPath },
+            env: { ...process.env, ARCH_BACKUP: '0', WATCH_POINTS_FILE: configPath },
         }).then((r) => r.stdout.trim());
         assert.notEqual(outB, '');
         assert.match(JSON.parse(outB).hookSpecificOutput.additionalContext, new RegExp(`${desktopRoot.replace(/[/\\]/g, '.')}.*proj-b\\.txt`));
@@ -193,7 +193,7 @@ test('check-docs-reminder: конфіг-файл з порожнім/відсу�
         await mkdir(outsideRoot, { recursive: true });
         const out = await execFileAsync('node', [HOOK_SCRIPT, 'SessionStart'], {
             cwd: outsideRoot,
-            env: { ...process.env, HOME: root, WATCH_POINTS_FILE: configPath },
+            env: { ...process.env, ARCH_BACKUP: '0', HOME: root, WATCH_POINTS_FILE: configPath },
         }).then((r) => r.stdout.trim());
         assert.equal(out, '', 'порожній points у файлі - як відсутній файл, тихий відкат далі по ланцюжку');
     } finally {
@@ -265,7 +265,7 @@ test('check-docs-reminder: Stop нагадує на 1-му ході сесії, 
     try {
         await makeRepoWithCommit(repoPath);
         await mkdir(docsRoot, { recursive: true }); // opt-in відкрито, а документа нема -> 'missing'
-        const env = { ...process.env, HOME: root, PROJECTS_ROOT: projectsRoot, DOCS_ROOT: docsRoot, HOOK_STATE_DIR: join(root, 'state'), REMIND_EVERY: '4' };
+        const env = { ...process.env, ARCH_BACKUP: '0', HOME: root, PROJECTS_ROOT: projectsRoot, DOCS_ROOT: docsRoot, HOOK_STATE_DIR: join(root, 'state'), REMIND_EVERY: '4' };
         const stop = (sid) => new Promise((resolve, reject) => {
             const c = execFile('node', [HOOK_SCRIPT, 'Stop'], { cwd: repoPath, env }, (err, stdout) => err ? reject(err) : resolve(stdout.trim()));
             c.stdin.end(JSON.stringify({ session_id: sid }));
@@ -276,6 +276,27 @@ test('check-docs-reminder: Stop нагадує на 1-му ході сесії, 
         assert.ok(await stop('S2'), 'інша сесія має власний лічильник: перший Stop нагадує');
         const start = await execFileAsync('node', [HOOK_SCRIPT, 'SessionStart'], { cwd: repoPath, env });
         assert.ok(start.stdout.trim(), 'SessionStart не тротлиться');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('check-docs-reminder: Stop у фоні запускає arch-backup, якщо є <projectsRoot>/Architecture-backup/.git', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hook-backup-'));
+    const projectsRoot = join(root, 'Projects');
+    const backupDir = join(projectsRoot, 'Architecture-backup');
+    try {
+        await mkdir(join(projectsRoot, 'p', '.arch'), { recursive: true });
+        await writeFile(join(projectsRoot, 'p', '.arch', 'README.txt'), 'опис');
+        await makeRepoWithCommit(backupDir);
+        await execFileAsync('node', [HOOK_SCRIPT, 'Stop'], { cwd: root, env: { ...process.env, HOME: root } });
+        const { readFile } = await import('node:fs/promises');
+        let copied = null;
+        for (let i = 0; i < 50 && copied === null; i++) {
+            await new Promise((r) => setTimeout(r, 200));
+            copied = await readFile(join(backupDir, 'p', 'README.txt'), 'utf8').catch(() => null);
+        }
+        assert.equal(copied, 'опис');
     } finally {
         await rm(root, { recursive: true, force: true });
     }

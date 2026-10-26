@@ -17,8 +17,8 @@ const DOC = [
 
 function mkDocs() {
   const root = mkdtempSync(join(tmpdir(), 'rd-'));
-  mkdirSync(join(root, 'Architecture'));
-  writeFileSync(join(root, 'Architecture', 'demo.txt'), DOC);
+  mkdirSync(join(root, 'demo', '.arch'), { recursive: true });
+  writeFileSync(join(root, 'demo', '.arch', 'README.txt'), DOC);
   return root;
 }
 
@@ -46,8 +46,8 @@ test('зміст, розділ за номером і за фрагментом,
 
 test('обрізання довгого розділу і offset', async () => {
   const root = mkdtempSync(join(tmpdir(), 'rd-'));
-  mkdirSync(join(root, 'Architecture'));
-  writeFileSync(join(root, 'Architecture', 'big.txt'), 'Назва\n=====\n' + 'слово '.repeat(400));
+  mkdirSync(join(root, 'big', '.arch'), { recursive: true });
+  writeFileSync(join(root, 'big', '.arch', 'README.txt'), 'Назва\n=====\n' + 'слово '.repeat(400));
   const a = await readDoc({ projectsRoot: root, repo: 'big', section: 1, max_chars: 500 });
   assert.match(a.text, /обрізано, лишилось \d+ символів: повтори з offset=\d+/);
   const off = Number(a.text.match(/offset=(\d+)/)[1]);
@@ -72,13 +72,51 @@ test('помилки: нема документа, неіснуючий розд
   await assert.rejects(readDoc({ projectsRoot: root, repo: '../etc/passwd' }), /repo:/);
 });
 
-test('реальні великі доки: NyxOS/NyxilumLang мають зміст і розділ коротший за файл', async () => {
-  const { existsSync, statSync } = await import('node:fs');
+test('кілька файлів у .arch/: перелік, file=, query по всіх, захист імені файлу', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rd-'));
+  const arch = join(root, 'multi', '.arch');
+  mkdirSync(arch, { recursive: true });
+  writeFileSync(join(arch, 'README.txt'), 'Огляд\n=====\nКоротко про проєкт.');
+  writeFileSync(join(arch, 'kernel.txt'), 'Ядро\n====\nПереривання і спільнеслово.');
+  writeFileSync(join(arch, 'changelog.txt'), '27.10.2026 — зроблено\nспільнеслово в журналі.');
+  writeFileSync(join(arch, '.meta.json'), '{}');
+  const toc = await readDoc({ projectsRoot: root, repo: 'multi' });
+  assert.match(toc.text, /3 файлів/);
+  assert.ok(toc.text.indexOf('README.txt') < toc.text.indexOf('kernel.txt'));
+  assert.ok(toc.text.indexOf('kernel.txt') < toc.text.indexOf('changelog.txt'), 'changelog останнім');
+  assert.ok(!toc.text.includes('.meta.json'));
+  const k = await readDoc({ projectsRoot: root, repo: 'multi', file: 'kernel.txt', section: 1 });
+  assert.match(k.text, /Переривання/);
+  const q = await readDoc({ projectsRoot: root, repo: 'multi', query: 'спільнеслово' });
+  assert.match(q.text, /2 збігів/);
+  assert.match(q.text, /kernel\.txt/);
+  assert.match(q.text, /changelog\.txt/);
+  const nope = await readDoc({ projectsRoot: root, repo: 'multi', file: 'nope.txt' });
+  assert.equal(nope.ok, false);
+  await assert.rejects(readDoc({ projectsRoot: root, repo: 'multi', file: '../../etc/passwd' }), /file:/);
+  await assert.rejects(readDoc({ projectsRoot: root, repo: 'multi', file: '.meta.json' }), /file:/);
+});
+
+test('стара схема: явний docsRoot читає <docsRoot>/<repo>.txt', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rd-'));
+  mkdirSync(join(root, 'Architecture'));
+  writeFileSync(join(root, 'Architecture', 'old.txt'), DOC);
+  const toc = await readDoc({ projectsRoot: root, repo: 'old', docsRoot: join(root, 'Architecture') });
+  assert.match(toc.text, /6 розділів/);
+});
+
+test('реальні великі доки: NyxOS має кілька файлів у .arch/, розділ коротший за файл', async () => {
+  const { existsSync } = await import('node:fs');
   const root = join(process.env.HOME, 'Projects');
-  if (!existsSync(join(root, 'Architecture', 'NyxOS.txt'))) return;
+  if (!existsSync(join(root, 'NyxOS', '.arch', 'README.txt'))) return;
   const toc = await readDoc({ projectsRoot: root, repo: 'NyxOS' });
   assert.ok(toc.text.length < 12000, `зміст завеликий: ${toc.text.length}`);
-  const size = statSync(join(root, 'Architecture', 'NyxOS.txt')).size;
-  const part = await readDoc({ projectsRoot: root, repo: 'NyxOS', section: 3, max_chars: 3000 });
-  assert.ok(part.text.length < 3400 && part.text.length < size / 20);
+  const part = await readDoc({ projectsRoot: root, repo: 'NyxOS', section: 1, max_chars: 3000 });
+  assert.ok(part.text.length < 3400);
+});
+
+test('parseOutline: рамки записів --- / === / == / [РРРР-ММ-ДД] теж розділи', () => {
+  const t = ['--- Перший запис', '    (15.09.2026) ---', 'текст', '=== 10.10.2026 — другий ===', 'x',
+    '== Третій ==', 'y', '[2026-10-14] Четвертий', 'z', '--- однорядкова рамка без закриття'].join('\n');
+  assert.deepEqual(parseOutline(t).map(s => s.title), ['Перший запис (15.09.2026)', '10.10.2026 — другий', 'Третій', '[2026-10-14] Четвертий', 'однорядкова рамка без закриття']);
 });

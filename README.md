@@ -8,12 +8,12 @@ An MCP server with six tools:
   given folder: branch, uncommitted changes, unpushed commits, and
   (optionally) the latest GitHub Actions CI conclusion. Replaces manually
   looping `git status` + `gh run list` over dozens of repos one at a time.
-- `check_docs` — flags which repos' `Architecture/<repo>.txt` doc is
-  missing or stale. Doesn't write or regenerate anything itself
+- `check_docs` — flags which repos' docs (`<repo>/.arch/`, see
+  [Doc layout](#doc-layout-arch-and-backup)) are missing or stale. Doesn't write or regenerate anything itself
   (understanding a codebase well enough to document it is an LLM/human
   job, not a script's) — it just says where to look, so docs get updated
   deliberately instead of silently rotting.
-- `write_doc` — writes `Architecture/<repo>.txt` and stamps it with the
+- `write_doc` — writes one doc file (`<repo>/.arch/<file>`) and stamps it with the
   repo's current commit hash, so `check_docs` can later measure staleness
   precisely (commits since write) instead of guessing from file mtime.
 - `check_release_drift` — for explicit (source repo, release repo) pairs,
@@ -22,11 +22,12 @@ An MCP server with six tools:
   usually a manual "whenever I remember" step (tag a version, push it,
   CI builds and publishes) — this answers "has anyone actually done that
   lately" without checking by hand.
-- `read_doc` — reads `Architecture/<repo>.txt` in PARTS instead of the whole file
-  (the big ones are 100+ KB): no arguments → a numbered table of contents;
-  `section` (number or title fragment) → one section; `query` → only the matching
-  lines with context. Recognises underlined, `##`, ALL-CAPS and dated-entry
-  headings.
+- `read_doc` — reads a repo's docs in PARTS instead of whole files: no arguments →
+  the list of files in `.arch/` plus a numbered table of contents of `README.txt`;
+  `file` → another file; `section` (number or title fragment) → one section;
+  `query` → only the matching lines with context (across ALL files unless `file`
+  is given). Recognises underlined, `##`, ALL-CAPS, dated-entry and
+  `--- entry ---` / `=== entry ===` / `[YYYY-MM-DD]` headings.
 - `check_pr_status` — a one-call snapshot of several GitHub PRs at once:
   state, mergeable, review decision, CI status, and — separately — how
   many top-level and inline review comments each has, with the latest
@@ -51,6 +52,40 @@ someone actually checks it's current. Comparing "last commit" to "doc's
 mtime" turns that from a thing you have to remember into a thing you can
 just ask.
 
+## Doc layout: `.arch/` and backup
+
+Since v0.7.0 each repo keeps its docs **inside itself**, in a git-ignored
+`.arch/` folder, instead of one big `<repo>.txt` in a central folder (the big
+ones had grown to 1500 lines / 150 KB, unreadable as one file):
+
+```
+<projectsRoot>/<repo>/.arch/
+    README.txt      overview: what it is, stack, layout, list of the other files
+    <topic>.txt     topic files for big projects (e.g. usb.txt, disk-installer.txt)
+    changelog.txt   dated entries ("what changed") — new ones are appended here
+    .meta.json      {commitHash, writtenAt} written by write_doc
+```
+
+- Add `.arch/` to your global gitignore (`~/.config/git/ignore`) so it never
+  lands in a (public) repo.
+- **Backup.** Because `.arch/` is ignored, nothing else keeps a copy of it.
+  `bin/arch-backup.mjs <projectsRoot> <backupDir>` copies every
+  `<repo>/.arch/` into a separate (private) git repo as `<backupDir>/<repo>/…`,
+  commits and pushes. It only ever **adds/updates — never deletes**: a lost
+  `.arch/` (or a whole deleted project) stays in the backup. Symlinks are not
+  followed. A lock file stops two runs from colliding; pushes are throttled
+  to once per 30 min unless `--push-now`.
+- It runs automatically from two places: the `check-docs-reminder` hook on
+  every Claude Code `Stop` (detached, when `<projectsRoot>/Architecture-backup/.git`
+  exists), and a **global git `pre-push` hook** (`hooks/git/dispatch.sh`,
+  installed by `hooks/git/install.sh` as `core.hooksPath`) — so every
+  `git push` of any repo also pushes the docs backup. The dispatcher first
+  runs the repo's own `.git/hooks/<name>` if there is one (setting
+  `core.hooksPath` would otherwise disable it) and never blocks the push.
+- The old central layout still works: pass `docsRoot` explicitly (tool
+  argument or watch point) and `<docsRoot>/<repo>.txt` + `<docsRoot>/.meta/<repo>.json`
+  are used exactly as before.
+
 ## Claude Code hook: `check-docs-reminder`
 
 The tools above only help if something actually calls them. `hooks/check-docs-reminder.mjs`
@@ -61,8 +96,8 @@ nearest git root that's a direct child of the projects folder), and — only
 when that repo's doc is missing or stale — injects a one-line reminder
 into Claude's context via `hookSpecificOutput.additionalContext`. Silent
 otherwise (clean repos, or a cwd outside the projects folder, produce no
-output; likewise if the projects folder never had an `Architecture/` folder
-at all — someone who's never opted into this convention doesn't get nagged
+output; likewise if no repo under the projects folder has a `.arch/` yet
+(or, for a point with an explicit `docsRoot`, that folder doesn't exist) — someone who's never opted into this convention doesn't get nagged
 about every repo being "missing"). `SessionStart` covers forgetting between
 sessions; `Stop` (which fires each time Claude's turn ends) re-checks every
 turn within the same session too, and self-quiets the moment `write_doc`
@@ -89,7 +124,7 @@ syntax difference to worry about):
 
 Not every repo necessarily lives under one root — one might get moved out
 of `~/Projects` onto the Desktop, say, with its doc sitting right next to
-it there instead of in the central `Architecture/` folder. The hook
+it there. The hook
 resolves "watch points" (`projectsRoot` + optional `docsRoot` pairs) in
 this order, using the first point whose `projectsRoot` contains the repo
 you're currently in:
@@ -166,7 +201,7 @@ Each repo entry: `name`, `path`, `branch`, `uncommittedFiles` (count),
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
 | `projectsRoot` | string | — (required unless `points`) | Folder with the repos |
-| `docsRoot` | string | `<projectsRoot>/Architecture` | Folder with the `<repo>.txt` docs |
+| `docsRoot` | string | — (in-repo `.arch/`) | Old central layout only: folder with `<repo>.txt` docs |
 | `points` | `{projectsRoot, docsRoot?}[]` | — | Several independent projectsRoot+docsRoot pairs in one call instead of one `projectsRoot`/`docsRoot` (e.g. a repo moved out of `~/Projects`, doc sitting right next to it wherever it went) |
 | `repos` | string[] | all subfolders | Limit to specific repo names (applied within each point independently) |
 | `only_attention` | boolean | `true` | Only return missing/stale; `false` returns everything including `current` |
@@ -185,11 +220,12 @@ tracking) or `docUpdatedAt`/`staleBySeconds` (mtime tracking, only on
 |---|---|---|---|
 | `projectsRoot` | string | — (required) | Folder with the repos |
 | `repo` | string | — (required) | Repo folder name (e.g. `"anylint"`) |
-| `content` | string | — (required) | With `mode:"replace"` - full text of `<repo>.txt`. With `mode:"append"` - just the new chunk |
-| `docsRoot` | string | `<projectsRoot>/Architecture` | Folder with the `<repo>.txt` docs |
+| `content` | string | — (required) | With `mode:"replace"` - full text of the file. With `mode:"append"` - just the new chunk |
+| `file` | string | `"README.txt"` | File inside `<repo>/.arch/`; a bare `*.txt` name (no path). New dated entry → `"changelog.txt"` + `mode:"append"` |
+| `docsRoot` | string | — (in-repo `.arch/`) | Old central layout only: folder with `<repo>.txt` docs (`file` is ignored) |
 | `mode` | `"replace"` \| `"append"` | `"replace"` | `"append"` appends `content` to the end of the existing file (one blank-line separator) |
 
-Writes `<repo>.txt` and, next to it, `.meta/<repo>.json` with the repo's
+Writes `<repo>/.arch/<file>` and `<repo>/.arch/.meta.json` with the repo's
 `HEAD` commit hash at write time. `check_docs` then reports the *exact*
 number of commits since the doc was written (`git rev-list --count`)
 instead of the coarser mtime-vs-last-commit-time comparison — the same
@@ -245,15 +281,19 @@ merged PRs instead.
   `findGitRepos` per root and merges the results before filtering by
   `repos`/`only_attention` — so a repo name filter matches regardless of
   which root it actually lives under.
+- `src/arch.js` — where a repo's docs live (`locate()`: in-repo `.arch/`
+  or the old central `docsRoot`), which files they consist of
+  (`listDocFiles()`, README first, changelog last) and the file-name guard.
 - `src/docs.js` — `checkDocs()`: prefers commit-based tracking
-  (`.meta/<repo>.json`, written by `write_doc`) when available; falls
-  back to comparing `git log -1 --format=%ct` against the doc file's
-  mtime for docs written directly. A repo with no commits yet reports
+  (`.meta.json`, written by `write_doc`) when available; falls
+  back to comparing `git log -1 --format=%ct` against the newest doc
+  file's mtime for docs written directly. Skips `Architecture` /
+  `Architecture-*` folders (the doc stores themselves). A repo with no commits yet reports
   `no-commits` rather than being silently lumped into `missing` or
   `current`. `points` (plural) checks each independent projectsRoot+docsRoot
   pair in turn and tags every result with which one it came from.
-- `src/write-doc.js` — `writeDoc()`: writes `<repo>.txt` plus
-  `.meta/<repo>.json` (`{commitHash, writtenAt}`, `HEAD` at write time).
+- `src/write-doc.js` — `writeDoc()`: writes one `.arch/<file>` plus
+  `.arch/.meta.json` (`{commitHash, writtenAt}`, `HEAD` at write time).
   Doesn't generate the text itself — understanding a codebase well
   enough to document it stays an LLM/human job.
 - `src/pr-status.js` — `checkPrStatus()`: fetches `gh pr view` plus both
@@ -289,10 +329,18 @@ merged PRs instead.
   rejected.
 - `test/hook.mjs` — `hooks/check-docs-reminder.mjs` as a real subprocess
   (it's a CLI entry point, not a library function): silent outside any
-  watch point, silent with no `Architecture/` folder at all, reminds and
+  watch point, silent when no repo has `.arch/` yet, reminds and
   resolves the right repo from a nested subdirectory, the watch-points
   config file driving two independent points at once, and an empty/absent
-  `points` array in that file falling through to the next source.
+  `points` array in that file falling through to the next source, and
+  `Stop` spawning the backup.
+- `bin/arch-backup.mjs` — the backup (see [Doc layout](#doc-layout-arch-and-backup)).
+  `hooks/git/dispatch.sh` + `install.sh` — the global git hooks.
+- `test/arch-backup.mjs` — backup in throwaway folders only: copies and
+  pushes to a local bare remote, never deletes (lost `.arch/` and a
+  deleted project both survive and restore), ignores symlinks, lock and
+  push throttling, and the real `pre-push` dispatcher end-to-end (local
+  hook still runs; a failing local hook still blocks the push).
 - `src/release-drift.js` — `checkReleaseDrift()`: finds the release
   repo's most recent tag via `git for-each-ref --sort=-creatordate`
   (sorted by actual tag time, not the semver-string sort `-v:refname`

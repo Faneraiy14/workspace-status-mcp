@@ -96,12 +96,12 @@ test('checkDocs: без projectsRoot кидає зрозумілу помилк�
     await assert.rejects(() => checkDocs({}), /projectsRoot або points обов'язковий/);
 });
 
-test('checkDocs: docsRoot за замовчуванням - "<projectsRoot>/Architecture"', async () => {
+test('checkDocs: без docsRoot документація - <repo>/.arch/ у самому репо', async () => {
     const root = await mkdtemp(join(tmpdir(), 'docs-test-'));
     try {
         await makeRepoWithCommit(join(root, 'proj'));
         const result = await checkDocs({ projectsRoot: root });
-        assert.equal(result.repos[0].docPath, join(root, 'Architecture', 'proj.txt'));
+        assert.equal(result.repos[0].docPath, join(root, 'proj', '.arch'));
     } finally {
         await rm(root, { recursive: true, force: true });
     }

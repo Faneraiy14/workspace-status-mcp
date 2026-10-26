@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // check-docs-reminder.mjs — Claude Code hook (SessionStart + Stop) that
 // closes the gap write_doc/check_docs alone can't: nothing forced Claude
-// to actually CALL check_docs, so a stale Architecture/<repo>.txt could
+// to actually CALL check_docs, so a stale <repo>/.arch/ doc could
 // go unnoticed for an entire session. This runs checkDocs() itself
 // (the same function workspace-status-mcp's check_docs tool wraps) and,
 // only when the CURRENT repo's doc is missing/stale, injects a reminder
@@ -35,7 +35,19 @@
 // contains the current repo wins - so more specific/preferred points
 // should come first if points ever overlap.
 //
-// Opt-in gate: if a point's docsRoot doesn't exist on disk AT ALL, that
+// DOC LAYOUT - a point WITHOUT docsRoot uses the in-repo layout
+// (<projectsRoot>/<repo>/.arch/, see src/arch.js); a point WITH an
+// explicit docsRoot keeps the old central <docsRoot>/<repo>.txt layout.
+//
+// BACKUP - .arch/ is git-ignored everywhere, so nothing else keeps a copy
+// of it. On Stop, for every in-repo point that has a
+// <projectsRoot>/Architecture-backup/ git repo, the hook spawns
+// bin/arch-backup.mjs DETACHED (the hook never waits for it; the script
+// throttles itself and only ever adds/updates files in the backup, never
+// deletes). ARCH_BACKUP=0 turns this off.
+//
+// Opt-in gate: if a point's docsRoot doesn't exist on disk AT ALL (in-repo
+// layout: no repo under projectsRoot has .arch/ yet), that
 // point stays fully silent - someone who's never used the Architecture-
 // doc convention (e.g. a colleague trying these tools for the first
 // time) would otherwise get nagged about EVERY repo being "missing"
@@ -46,7 +58,10 @@
 import { checkDocs } from '../src/docs.js';
 import { homedir } from 'node:os';
 import { dirname, basename, join } from 'node:path';
-import { stat, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { stat, readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { ARCH_DIR } from '../src/arch.js';
 
 const MAX_WALK_UP = 6;
 
@@ -141,9 +156,32 @@ async function shouldRemind(hookEventName, repo) {
     return n === 1 || n % REMIND_EVERY === 1;
 }
 
+// Чи хоч один репо під projectsRoot уже має .arch/ - opt-in gate для in-repo схеми.
+async function anyArchUnder(projectsRoot) {
+    const entries = await readdir(projectsRoot, { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+        if (e.isDirectory() && await stat(join(projectsRoot, e.name, ARCH_DIR)).then((s) => s.isDirectory()).catch(() => false)) return true;
+    }
+    return false;
+}
+
+const BACKUP_SCRIPT = fileURLToPath(new URL('../bin/arch-backup.mjs', import.meta.url));
+
+async function spawnBackups(points) {
+    if (process.env.ARCH_BACKUP === '0') return;
+    for (const p of points) {
+        if (p.docsRoot) continue; // центральна схема - бекап не для неї
+        const backupDir = join(p.projectsRoot, 'Architecture-backup');
+        if (!(await stat(join(backupDir, '.git')).then(() => true).catch(() => false))) continue;
+        const child = spawn(process.execPath, [BACKUP_SCRIPT, p.projectsRoot, backupDir], { detached: true, stdio: 'ignore' });
+        child.unref();
+    }
+}
+
 async function main() {
     const hookEventName = process.argv[2] || 'SessionStart';
     const points = (await resolvePoints()).map(normalizePoint);
+    if (hookEventName === 'Stop') await spawnBackups(points);
 
     let matchedPoint = null;
     let repo = null;
@@ -156,9 +194,11 @@ async function main() {
     }
     if (!matchedPoint) return; // жодна точка не покриває поточну робочу теку - тихо виходимо
 
-    const docsRoot = matchedPoint.docsRoot || join(matchedPoint.projectsRoot, 'Architecture');
-    const docsRootExists = await stat(docsRoot).then(() => true).catch(() => false);
-    if (!docsRootExists) return; // ніхто ще не почав користуватись конвенцією для цієї точки
+    const docsRoot = matchedPoint.docsRoot; // undefined -> in-repo схема (<repo>/.arch/)
+    const optedIn = docsRoot
+        ? await stat(docsRoot).then(() => true).catch(() => false)
+        : await anyArchUnder(matchedPoint.projectsRoot);
+    if (!optedIn) return; // ніхто ще не почав користуватись конвенцією для цієї точки
 
     let result;
     try {
@@ -177,7 +217,8 @@ async function main() {
         : entry.status === 'missing' ? 'документа ще не існує' : `застарів за mtime (${entry.docPath})`;
 
     // join(), не рядкова конкатенація з "/" - на Windows роздільник інший.
-    const message = `[Нагадування Architecture-документації] ${join(docsRoot, repo + '.txt')}: ` +
+    const where = docsRoot ? join(docsRoot, repo + '.txt') : join(matchedPoint.projectsRoot, repo, ARCH_DIR);
+    const message = `[Нагадування Architecture-документації] ${where}: ` +
         `${entry.status} - ${detail}. Якщо в цій сесії було реальне дослідження/зміни в ${repo}, ` +
         `виклич workspace-status write_doc перед завершенням роботи над ним - не покладайся на пам'ять.`;
 

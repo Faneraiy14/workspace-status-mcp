@@ -1,5 +1,5 @@
 // docs.js — детектор застарілості "документації архітектури"
-// (~/Projects/Architecture/<repo>.txt). Не генерує документацію сам
+// (типово <repo>/.arch/*.txt, або старе <docsRoot>/<repo>.txt - див. arch.js). Не генерує документацію сам
 // (розуміння архітектури коду - завдання для AI/людини, не для скрипта)
 // - лише каже, де відповідь застаріла чи взагалі відсутня, щоб
 // AI-асистент (чи людина) знав, куди дивитись, а не перечитував усе
@@ -7,12 +7,11 @@
 //
 // Два способи виміряти "застарілість", залежно від того, чи документ
 // колись писався через write-doc.js:
-// - commit-трекінг (Architecture/.meta/<repo>.json є) - точна кількість
+// - commit-трекінг (.arch/.meta.json чи <docsRoot>/.meta/<repo>.json є) - точна кількість
 //   комітів між збереженим хешем і HEAD через git rev-list --count.
 // - mtime-трекінг (тільки для документів, написаних напряму, без
-//   write-doc.js - увесь наявний масив Architecture/*.txt на момент
-//   появи write-doc.js) - грубіший запасний варіант: час mtime файлу
-//   документації проти часу останнього коміту репо.
+//   write-doc.js) - грубіший запасний варіант: найсвіжіший mtime серед
+//   файлів документації проти часу останнього коміту репо.
 //
 // "points" - кілька незалежних пар (projectsRoot, docsRoot): не всі
 // репо обов'язково лежать під ОДНИМ коренем з документацією поруч у
@@ -21,10 +20,10 @@
 // ~/Projects/Architecture). projectsRoot/docsRoot (однина) лишаються
 // зручним скороченням для найчастішого випадку - рівно одна точка.
 
-import { stat, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findGitRepos, run } from './sweep.js';
-import { metaPath } from './write-doc.js';
+import { locate, listDocFiles } from './arch.js';
 
 // Останній коміт репозиторію як Unix-timestamp (секунди) - той самий
 // формат, що й Date.getTime()/1000, для прямого порівняння з mtime
@@ -36,9 +35,16 @@ async function lastCommitTimestamp(repoPath) {
     return Number.isFinite(ts) ? ts : null;
 }
 
-async function readMeta(docsRoot, repoName) {
+// Сховища самої документації (Architecture/, Architecture-backup/ - бекап
+// усіх .arch/) - теж git-репо під projectsRoot, але документувати їх нема
+// чого: інакше check_docs вічно показував би їх як "missing".
+function isDocsStore(name) {
+    return name === 'Architecture' || name.startsWith('Architecture-');
+}
+
+async function readMeta(metaFile) {
     try {
-        const parsed = JSON.parse(await readFile(metaPath(docsRoot, repoName), 'utf8'));
+        const parsed = JSON.parse(await readFile(metaFile, 'utf8'));
         return typeof parsed.commitHash === 'string' && typeof parsed.writtenAt === 'number' ? parsed : null;
     } catch {
         return null; // нема файлу метаданих, чи він пошкоджений - однаково відкат на mtime
@@ -56,7 +62,9 @@ async function commitsSince(repoPath, commitHash) {
 }
 
 async function checkOneRepo(repo, projectsRoot, docsRoot) {
-    const docPath = join(docsRoot, `${repo.name}.txt`);
+    const loc = locate({ projectsRoot, docsRoot, repo: repo.name });
+    // in-repo: тека .arch/ (у ній кілька файлів); central: сам <repo>.txt
+    const docPath = loc.layout === 'central' ? join(loc.dir, loc.centralFile) : loc.dir;
 
     const commitTs = await lastCommitTimestamp(repo.path);
     if (commitTs === null) {
@@ -68,10 +76,8 @@ async function checkOneRepo(repo, projectsRoot, docsRoot) {
         return { name: repo.name, projectsRoot, docPath, status: 'no-commits', lastCommitAt: null, docUpdatedAt: null };
     }
 
-    let docMtimeMs;
-    try {
-        docMtimeMs = (await stat(docPath)).mtimeMs;
-    } catch {
+    const files = await listDocFiles(loc);
+    if (files.length === 0) {
         return {
             name: repo.name,
             projectsRoot,
@@ -82,7 +88,8 @@ async function checkOneRepo(repo, projectsRoot, docsRoot) {
         };
     }
 
-    const meta = await readMeta(docsRoot, repo.name);
+    const docMtimeMs = Math.max(...files.map((f) => f.mtimeMs));
+    const meta = await readMeta(loc.metaFile);
     const since = meta ? await commitsSince(repo.path, meta.commitHash) : null;
     if (meta && since !== null) {
         return {
@@ -115,7 +122,7 @@ async function checkOneRepo(repo, projectsRoot, docsRoot) {
 /**
  * @param {object} opts
  * @param {string} [opts.projectsRoot] - корінь із репозиторіями (типово ~/Projects) - скорочення для points: [{projectsRoot, docsRoot}]
- * @param {string} [opts.docsRoot] - тека з .txt-документацією для projectsRoot (типово <projectsRoot>/Architecture)
+ * @param {string} [opts.docsRoot] - стара центральна тека з <repo>.txt; якщо не задано - кожен репо дивиться у власну <repo>/.arch/
  * @param {{projectsRoot: string, docsRoot?: string}[]} [opts.points] - кілька незалежних пар корінь+документація за один виклик; має пріоритет над projectsRoot/docsRoot, якщо задано
  * @param {string[]} [opts.repos] - обмежитись конкретними назвами тек замість повного сканування (застосовується в межах КОЖНОЇ точки окремо)
  * @param {boolean} [opts.only_attention] - показати лише missing/stale (типово true)
@@ -129,10 +136,10 @@ export async function checkDocs({ projectsRoot, docsRoot, points, repos, only_at
 
     const results = [];
     for (const point of resolvedPoints) {
-        const pointDocsRoot = point.docsRoot || join(point.projectsRoot, 'Architecture');
+        const pointDocsRoot = point.docsRoot || undefined;
         const pointRepos = repos && repos.length
             ? repos.map((name) => ({ name, path: join(point.projectsRoot, name) }))
-            : await findGitRepos(point.projectsRoot);
+            : (await findGitRepos(point.projectsRoot)).filter((r) => !isDocsStore(r.name));
 
         for (const repo of pointRepos) {
             results.push(await checkOneRepo(repo, point.projectsRoot, pointDocsRoot));

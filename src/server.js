@@ -11,7 +11,7 @@ import { writeDoc } from './write-doc.js';
 import { checkPrStatus } from './pr-status.js';
 import { readDoc } from './read-doc.js';
 
-const server = new McpServer({ name: 'workspace-status-mcp', version: '0.6.0' });
+const server = new McpServer({ name: 'workspace-status-mcp', version: '0.7.0' });
 
 server.registerTool(
     'sweep_status',
@@ -46,7 +46,8 @@ server.registerTool(
     {
         title: 'Детектор застарілої/відсутньої архітектурної документації',
         description:
-            'Перевіряє актуальність ~/Projects/Architecture/<repo>.txt кожного git-репозиторія: "missing" ' +
+            'Перевіряє актуальність документації кожного git-репозиторія - теки <repo>/.arch/ (README.txt, теми, ' +
+            'changelog.txt; або старого <docsRoot>/<repo>.txt, якщо docsRoot задано явно): "missing" ' +
             '(документації нема взагалі), "stale" (репо мав нові зміни після документа), "current" ' +
             '(актуально), "no-commits" (репо ще без жодного коміту). Для документів, записаних через ' +
             'write_doc, рахує ТОЧНУ кількість комітів з моменту запису (trackingMethod: "commit"); для решти ' +
@@ -58,10 +59,10 @@ server.registerTool(
         inputSchema: {
             projectsRoot: z.string().optional().describe('Абсолютний шлях до теки з репозиторіями (напр. "/home/sviat/Projects"). Не потрібен, якщо задано points'),
             docsRoot: z.string().optional()
-                .describe('Тека з .txt-документацією для projectsRoot (типово "<projectsRoot>/Architecture")'),
+                .describe('Лише для старої схеми: центральна тека з <repo>.txt. Без нього - <repo>/.arch/ у кожному репо'),
             points: z.array(z.object({
                 projectsRoot: z.string().describe('Корінь із репозиторіями цієї точки'),
-                docsRoot: z.string().optional().describe('Тека з .txt-документацією цієї точки (типово "<projectsRoot>/Architecture")'),
+                docsRoot: z.string().optional().describe('Лише для старої схеми: центральна тека з <repo>.txt цієї точки'),
             })).optional()
                 .describe('Кілька незалежних пар корінь+документація за один виклик замість одної projectsRoot/docsRoot'),
             repos: z.array(z.string()).optional()
@@ -106,7 +107,9 @@ server.registerTool(
     {
         title: 'Записати архітектурну документацію репо з прив\'язкою до коміту',
         description:
-            'Записує ~/Projects/Architecture/<repo>.txt і поруч фіксує commit-хеш репозиторія на момент запису. ' +
+            'Записує один файл документації <repo>/.arch/<file> (типово README.txt - огляд; changelog.txt - ' +
+            'датовані записи "що зробили"; або тематичний файл) і поруч, у .arch/.meta.json, фіксує commit-хеш ' +
+            'репозиторія на момент запису. ' +
             'Після цього check_docs може рахувати РЕАЛЬНУ кількість комітів з моменту запису (git rev-list --count) ' +
             'замість грубого порівняння за mtime файлу. Текст документації інструмент не генерує - лише зберігає ' +
             'вже готовий текст (розуміння коду для документування лишається завданням AI/людини). ' +
@@ -117,12 +120,14 @@ server.registerTool(
             projectsRoot: z.string().describe('Абсолютний шлях до теки з репозиторіями (напр. "/home/sviat/Projects")'),
             repo: z.string().describe('Назва теки репозиторія (напр. "anylint")'),
             content: z.string().describe(
-                'Текст документації для запису. При mode:"replace" (типово) - ПОВНИЙ вміст <repo>.txt. ' +
+                'Текст документації для запису. При mode:"replace" (типово) - ПОВНИЙ вміст файлу. ' +
                 'При mode:"append" - ЛИШЕ новий шматок, що додається в кінець (сервер сам приписує один ' +
                 'порожній рядок-роздільник перед ним, якщо файл уже існує).'
             ),
+            file: z.string().optional()
+                .describe('Файл у <repo>/.arch/ (типово "README.txt"). Новий датований запис - "changelog.txt" з mode:"append". Лише ім\'я .txt, без шляху'),
             docsRoot: z.string().optional()
-                .describe('Тека з .txt-документацією (типово "<projectsRoot>/Architecture")'),
+                .describe('Лише для старої схеми: центральна тека з <repo>.txt (тоді file ігнорується)'),
             mode: z.enum(['replace', 'append']).optional()
                 .describe('"replace" (типово) - content замінює весь файл. "append" - content дописується в кінець наявного.'),
         },
@@ -162,20 +167,22 @@ server.registerTool(
 server.registerTool(
     'read_doc',
     {
-        title: 'Прочитати Architecture/<repo>.txt частинами (зміст / розділ / пошук)',
+        title: 'Прочитати документацію <repo>/.arch/ частинами (файли / зміст / розділ / пошук)',
         description:
-            'Читає документацію репо ЧАСТКАМИ замість цілого файлу (NyxilumLang.txt ~147 КБ, NyxOS.txt ~137 КБ). ' +
-            'Без section/query - ЗМІСТ (нумеровані розділи з діапазоном рядків і розміром). section (номер зі змісту ' +
-            'або фрагмент заголовка) - текст одного розділу. query - лише рядки-збіги з контекстом і назвою розділу. ' +
-            'Користуйся замість Read цілого .txt, коли треба один абзац.',
+            'Читає документацію репо (<repo>/.arch/: README.txt, тематичні файли, changelog.txt) ЧАСТКАМИ. ' +
+            'Без аргументів - перелік файлів .arch/ і ЗМІСТ README.txt (нумеровані розділи з діапазоном рядків). ' +
+            'file - інший файл. section (номер зі змісту або фрагмент заголовка) - текст одного розділу файлу. ' +
+            'query - лише рядки-збіги з контекстом і назвою розділу; без file шукає по ВСІХ файлах .arch/. ' +
+            'Користуйся замість Read цілого файлу, коли треба один абзац.',
         inputSchema: {
             repo: z.string().describe('Назва теки репо (напр. "NyxOS")'),
+            file: z.string().optional().describe('Файл у <repo>/.arch/ (типово README.txt; для query без file - усі файли)'),
             section: z.union([z.string(), z.number()]).optional().describe('Номер розділу зі змісту або фрагмент його заголовка'),
             query: z.string().optional().describe('Слова для пошуку (усі мають бути в рядку, без урахування регістру)'),
             max_chars: z.number().int().optional().describe('Ліміт відповіді, 500-40000 (типово 6000)'),
             offset: z.number().int().optional().describe('З якого символу продовжити, якщо розділ було обрізано'),
             projectsRoot: z.string().optional().describe('Типово ~/Projects'),
-            docsRoot: z.string().optional().describe('Типово "<projectsRoot>/Architecture"'),
+            docsRoot: z.string().optional().describe('Лише для старої схеми: центральна тека з <repo>.txt'),
         },
     },
     async (args) => {

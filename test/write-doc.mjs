@@ -47,12 +47,13 @@ test('writeDoc: пише .txt і .meta/<repo>.json з поточним HEAD', as
     }
 });
 
-test('writeDoc: створює Architecture/ і Architecture/.meta/, якщо їх ще нема', async () => {
+test('writeDoc: без docsRoot створює <repo>/.arch/README.txt і .arch/.meta.json', async () => {
     const root = await mkdtemp(join(tmpdir(), 'write-doc-test-'));
     try {
         await makeRepoWithCommit(join(root, 'proj'));
         const result = await writeDoc({ projectsRoot: root, repo: 'proj', content: 'x' });
-        assert.equal(result.docPath, join(root, 'Architecture', 'proj.txt'));
+        assert.equal(result.docPath, join(root, 'proj', '.arch', 'README.txt'));
+        assert.equal(result.metaPath, join(root, 'proj', '.arch', '.meta.json'));
     } finally {
         await rm(root, { recursive: true, force: true });
     }
@@ -120,6 +121,23 @@ test('writeDoc: невідомий mode кидає зрозумілу помил
             () => writeDoc({ projectsRoot: root, repo: 'proj', content: 'x', mode: 'wat' }),
             /mode має бути "replace" чи "append"/
         );
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('writeDoc: file= пише в інший файл .arch/, шлях поза .arch/ відхиляється', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'write-doc-test-'));
+    try {
+        await makeRepoWithCommit(join(root, 'proj'));
+        await writeDoc({ projectsRoot: root, repo: 'proj', content: 'огляд' });
+        const r = await writeDoc({ projectsRoot: root, repo: 'proj', content: '27.10.2026 — запис', file: 'changelog.txt', mode: 'append' });
+        assert.equal(r.docPath, join(root, 'proj', '.arch', 'changelog.txt'));
+        assert.equal(await readFile(join(root, 'proj', '.arch', 'README.txt'), 'utf8'), 'огляд');
+        for (const bad of ['../x.txt', 'a/b.txt', '.meta.json', 'x.md', '..txt']) {
+            await assert.rejects(() => writeDoc({ projectsRoot: root, repo: 'proj', content: 'x', file: bad }), /file:/, bad);
+        }
+        await assert.rejects(() => writeDoc({ projectsRoot: root, repo: '../proj', content: 'x' }), /repo:/);
     } finally {
         await rm(root, { recursive: true, force: true });
     }
