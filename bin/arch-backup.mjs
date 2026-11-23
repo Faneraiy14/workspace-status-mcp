@@ -6,13 +6,14 @@
 // тож без цього скрипта в нього не було б жодної копії поза диском.
 //
 // Правила, на яких усе тримається:
-// - лише КОПІЮВАННЯ з проєктів у бекап, ніколи навпаки, і ніколи не
-//   видаляє: зник .arch/ у проєкті (чи весь проєкт) - у бекапі все лишилось;
+// - нічого не видаляє: зник .arch/ у проєкті (чи весь проєкт) - у бекапі все лишилось;
 // - спершу підтягнути бекап з remote (pull --rebase); не вдалось - нічого не
 //   копіювати й не комітити (22.11 і 23.11 без цього двічі затерло свіжі записи);
-// - застарілу локальну копію не копіювати: файл у проєкті старіший за останній
-//   коміт цього файлу в бекапі (напр. його оновила хмарна сесія) - пропуск і
-//   запис у лог; щоб оновити .arch - скопіювати з бекапу назад вручну;
+// - розбіжність ноутбук/бекап - тристороннє порівняння зі спільною базою
+//   (див. syncArch): змінене з одного боку йде в інший, з обох - злиття, а
+//   конфлікт ніколи нічого не перезаписує (версія ноутбука - поруч у бекапі).
+//   Єдиний запис у проєкт: оновлення .arch з бекапу, коли на ноутбуці файл
+//   не мінявся з останньої синхронізації;
 // - копіюються лише звичайні файли (не symlink-и, не теки глибше .arch/);
 // - lock-файл: два одночасні запуски (Stop-хук + pre-push) не б'ються;
 // - push не частіше ніж раз на PUSH_EVERY_MS, якщо не передано --push-now
@@ -39,15 +40,32 @@ async function git(args, cwd) {
     return stdout.trim();
 }
 
-/** Час (мс) останнього коміту файлу в бекапі; null - файл не в git (чи бекап не git-репо). */
-async function lastCommitMs(backupDir, relPath) {
-    const ct = await git(['log', '-1', '--format=%ct', '--', relPath], backupDir).catch(() => '');
-    return ct ? Number(ct) * 1000 : null;
+// Спільна база: вміст файлу на момент останньої синхронізації, коли ноутбук і бекап
+// збігались (<backupDir>/.backup-state/base/<проєкт>/<файл>). Без неї не відрізнити
+// «змінили тут» від «змінили там».
+async function mergeFile(local, base, other) {
+    // git merge-file -p: код 0 - злито чисто, >0 - конфлікти, <0 - помилка (напр. двійковий файл)
+    try {
+        const { stdout } = await execFileAsync('git', ['merge-file', '-p', '-L', 'ноутбук', '-L', 'база', '-L', 'бекап', local, base, other], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 });
+        return stdout;
+    } catch {
+        return null;
+    }
 }
 
-/** Скопіювати нові/змінені файли; повертає кількість скопійованих. Нічого не видаляє.
- *  stale (масив) - сюди потрапляють пропущені застарілі локальні копії. */
-export async function syncArch(projectsRoot, backupDir, stale = []) {
+/** Синхронізувати .arch/ проєктів із бекапом без втрат. Повертає кількість файлів, змінених у бекапі.
+ *  Для кожного файлу (Н - ноутбук, Б - бекап, О - спільна база):
+ *  - Б нема -> копія Н у бекап;
+ *  - Н = Б -> нічого (лише оновити базу);
+ *  - змінено лише в бекапі (Н = О) -> бекап -> ноутбук (своїх правок там не було, нічого не губиться);
+ *  - змінено лише на ноутбуці (Б = О) -> ноутбук -> бекап;
+ *  - змінено з обох боків -> злиття git merge-file; чисто - результат в обидва місця;
+ *    конфлікт, двійковий файл чи нема бази -> НІЧОГО не перезаписується: версія ноутбука
+ *    кладеться поруч у бекапі як <файл>.noutbuk-<дата>, рядок CONFLICT у звіті.
+ *  report: { pulled: [], merged: [], conflicts: [] }. Нічого не видаляє, symlink-и пропускає. */
+export async function syncArch(projectsRoot, backupDir, report = {}) {
+    for (const k of ['pulled', 'merged', 'conflicts']) report[k] ??= [];
+    const baseRoot = join(backupDir, '.backup-state', 'base');
     let copied = 0;
     const entries = await readdir(projectsRoot, { withFileTypes: true });
     for (const e of entries) {
@@ -62,20 +80,62 @@ export async function syncArch(projectsRoot, backupDir, stale = []) {
         }
         for (const f of files) {
             if (!f.isFile()) continue; // isFile() false і для symlink - не йдемо за посиланнями
+            if (/\.noutbuk-\d/.test(f.name)) continue; // копії конфліктів живуть лише в бекапі
+            const rel = `${e.name}/${f.name}`;
             const from = join(src, f.name);
             const destDir = join(backupDir, e.name);
             const to = join(destDir, f.name);
-            const [a, b] = await Promise.all([readFile(from), readFile(to).catch(() => null)]);
-            if (b && a.equals(b)) continue;
-            if (b) {
-                const committed = await lastCommitMs(backupDir, `${e.name}/${f.name}`);
-                if (committed !== null && (await stat(from)).mtimeMs < committed) {
-                    stale.push(`${e.name}/${f.name}`);
-                    continue;
-                }
+            const baseFile = join(baseRoot, e.name, f.name);
+            const [a, b, o] = await Promise.all([readFile(from), readFile(to).catch(() => null), readFile(baseFile).catch(() => null)]);
+            const setBase = async (buf) => {
+                await mkdir(join(baseRoot, e.name), { recursive: true });
+                await writeFile(baseFile, buf);
+            };
+            if (b === null) {
+                await mkdir(destDir, { recursive: true });
+                await copyFile(from, to);
+                await setBase(a);
+                copied++;
+                continue;
             }
-            await mkdir(destDir, { recursive: true });
-            await copyFile(from, to);
+            if (a.equals(b)) {
+                if (!o || !o.equals(a)) await setBase(a);
+                continue;
+            }
+            if (o && a.equals(o)) { // змінено лише в бекапі
+                await writeFile(from, b);
+                await setBase(b);
+                report.pulled.push(rel);
+                continue;
+            }
+            if (o && b.equals(o)) { // змінено лише на ноутбуці
+                await copyFile(from, to);
+                await setBase(a);
+                copied++;
+                continue;
+            }
+            const merged = o ? await mergeFile(from, baseFile, to) : null;
+            if (merged) {
+                await writeFile(to, merged);
+                await writeFile(from, merged);
+                await setBase(merged);
+                report.merged.push(rel);
+                copied++;
+                continue;
+            }
+            const dot0 = f.name.lastIndexOf('.');
+            const stem = dot0 > 0 ? f.name.slice(0, dot0) : f.name;
+            const already = await readdir(destDir).catch(() => []);
+            let dup = false;
+            for (const n of already) {
+                if (n.startsWith(`${stem}.noutbuk-`) && a.equals(await readFile(join(destDir, n)).catch(() => Buffer.alloc(0)))) { dup = true; break; }
+            }
+            if (dup) continue; // ця версія ноутбука вже лежить поруч - чекає, поки розв'яжуть
+            const stamp = new Date().toLocaleString('sv-SE').slice(0, 16).replace(/[- :]/g, '').replace(/^(\d{8})/, '$1-');
+            const dot = f.name.lastIndexOf('.');
+            const side = dot > 0 ? `${f.name.slice(0, dot)}.noutbuk-${stamp}${f.name.slice(dot)}` : `${f.name}.noutbuk-${stamp}`;
+            await writeFile(join(destDir, side), a);
+            report.conflicts.push(`${rel} -> ${e.name}/${side}`);
             copied++;
         }
     }
@@ -129,10 +189,10 @@ export async function backup({ projectsRoot, backupDir, pushNow = false, noPush 
                 }
             }
         }
-        const stale = [];
-        const copied = await syncArch(projectsRoot, backupDir, stale);
-        if (stale.length) {
-            await appendFile(join(stateDir, 'log.txt'), `${new Date().toISOString()} stale (не скопійовано, в бекапі новіше): ${stale.join(', ')}\n`);
+        const report = {};
+        const copied = await syncArch(projectsRoot, backupDir, report);
+        for (const [k, list] of Object.entries(report)) {
+            if (list.length) await appendFile(join(stateDir, 'log.txt'), `${new Date().toISOString()} ${k === 'conflicts' ? 'CONFLICT' : k}: ${list.join(', ')}\n`);
         }
         let committed = false;
         if (await git(['status', '--porcelain', '--untracked-files=all'], backupDir)) {
