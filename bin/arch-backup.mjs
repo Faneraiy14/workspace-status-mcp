@@ -8,6 +8,11 @@
 // Правила, на яких усе тримається:
 // - лише КОПІЮВАННЯ з проєктів у бекап, ніколи навпаки, і ніколи не
 //   видаляє: зник .arch/ у проєкті (чи весь проєкт) - у бекапі все лишилось;
+// - спершу підтягнути бекап з remote (pull --rebase); не вдалось - нічого не
+//   копіювати й не комітити (22.11 і 23.11 без цього двічі затерло свіжі записи);
+// - застарілу локальну копію не копіювати: файл у проєкті старіший за останній
+//   коміт цього файлу в бекапі (напр. його оновила хмарна сесія) - пропуск і
+//   запис у лог; щоб оновити .arch - скопіювати з бекапу назад вручну;
 // - копіюються лише звичайні файли (не symlink-и, не теки глибше .arch/);
 // - lock-файл: два одночасні запуски (Stop-хук + pre-push) не б'ються;
 // - push не частіше ніж раз на PUSH_EVERY_MS, якщо не передано --push-now
@@ -34,8 +39,15 @@ async function git(args, cwd) {
     return stdout.trim();
 }
 
-/** Скопіювати нові/змінені файли; повертає кількість скопійованих. Нічого не видаляє. */
-export async function syncArch(projectsRoot, backupDir) {
+/** Час (мс) останнього коміту файлу в бекапі; null - файл не в git (чи бекап не git-репо). */
+async function lastCommitMs(backupDir, relPath) {
+    const ct = await git(['log', '-1', '--format=%ct', '--', relPath], backupDir).catch(() => '');
+    return ct ? Number(ct) * 1000 : null;
+}
+
+/** Скопіювати нові/змінені файли; повертає кількість скопійованих. Нічого не видаляє.
+ *  stale (масив) - сюди потрапляють пропущені застарілі локальні копії. */
+export async function syncArch(projectsRoot, backupDir, stale = []) {
     let copied = 0;
     const entries = await readdir(projectsRoot, { withFileTypes: true });
     for (const e of entries) {
@@ -55,6 +67,13 @@ export async function syncArch(projectsRoot, backupDir) {
             const to = join(destDir, f.name);
             const [a, b] = await Promise.all([readFile(from), readFile(to).catch(() => null)]);
             if (b && a.equals(b)) continue;
+            if (b) {
+                const committed = await lastCommitMs(backupDir, `${e.name}/${f.name}`);
+                if (committed !== null && (await stat(from)).mtimeMs < committed) {
+                    stale.push(`${e.name}/${f.name}`);
+                    continue;
+                }
+            }
             await mkdir(destDir, { recursive: true });
             await copyFile(from, to);
             copied++;
@@ -100,7 +119,21 @@ export async function backup({ projectsRoot, backupDir, pushNow = false, noPush 
         await appendFile(ignoreFile, '.backup-state/\n');
     }
     return withLock(stateDir, async () => {
-        const copied = await syncArch(projectsRoot, backupDir);
+        // спершу свіже з remote; помилка тут летить у main() -> лог, нічого не закомічено
+        if (!noPush && (await git(['remote'], backupDir)) !== '') {
+            const up = await git(['rev-parse', '--abbrev-ref', '@{u}'], backupDir).catch(() => null);
+            if (up) {
+                await git(['fetch', '-q'], backupDir);
+                if ((await git(['rev-list', '--count', 'HEAD..@{u}'], backupDir)) !== '0') {
+                    await git(['pull', '-q', '--rebase', '--autostash'], backupDir);
+                }
+            }
+        }
+        const stale = [];
+        const copied = await syncArch(projectsRoot, backupDir, stale);
+        if (stale.length) {
+            await appendFile(join(stateDir, 'log.txt'), `${new Date().toISOString()} stale (не скопійовано, в бекапі новіше): ${stale.join(', ')}\n`);
+        }
         let committed = false;
         if (await git(['status', '--porcelain', '--untracked-files=all'], backupDir)) {
             await git(['add', '-A'], backupDir);

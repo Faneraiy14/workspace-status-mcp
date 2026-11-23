@@ -223,3 +223,58 @@ test('backup: перший push у remote без upstream ставить -u і �
         await rm(root, { recursive: true, force: true });
     }
 });
+
+// Друга копія бекапу (як хмарна сесія): комітить і пушить свій файл у той самий remote.
+async function pushFromOtherClone(root, remote, rel, content) {
+    const other = join(root, 'other-' + Math.random().toString(36).slice(2));
+    await git(['clone', '-q', remote, other], root);
+    await git(['config', 'user.email', 'cloud@test.local'], other);
+    await git(['config', 'user.name', 'Cloud'], other);
+    await mkdir(dirname(join(other, rel)), { recursive: true });
+    await writeFile(join(other, rel), content);
+    await git(['add', '-A'], other);
+    await git(['commit', '-q', '-m', 'cloud'], other);
+    await git(['push', '-q'], other, { ARCH_BACKUP: '0' });
+}
+
+test('backup: спершу підтягує remote — свіжий запис хмари не затирається застарілою локальною копією', async () => {
+    const { root, projects, backupDir, remote } = await setup();
+    try {
+        await backup({ projectsRoot: projects, backupDir, pushNow: true });
+        // локальна копія лишилась старою (mtime у минулому), а хмара оновила файл у бекапі
+        const { utimes } = await import('node:fs/promises');
+        const old = new Date(Date.now() - 60 * 60 * 1000);
+        await utimes(join(projects, 'a', '.arch', 'README.txt'), old, old);
+        await pushFromOtherClone(root, remote, 'a/README.txt', 'свіже з хмари');
+        await pushFromOtherClone(root, remote, 'c/notes.txt', 'інший проєкт');
+        const r = await backup({ projectsRoot: projects, backupDir, pushNow: true });
+        assert.equal(r.committed, false);
+        assert.equal(await readFile(join(backupDir, 'a', 'README.txt'), 'utf8'), 'свіже з хмари');
+        assert.equal(await git(['show', 'main:a/README.txt'], remote), 'свіже з хмари');
+        assert.match(await readFile(join(backupDir, '.backup-state', 'log.txt'), 'utf8'), /stale.*a\/README\.txt/);
+        // справді нова локальна правка (новіша за коміт) - копіюється й пушиться поверх уже підтягнутого
+        await writeFile(join(projects, 'a', '.arch', 'README.txt'), 'нове з ноутбука');
+        await pushFromOtherClone(root, remote, 'c/notes.txt', 'ще раз з хмари');
+        const r2 = await backup({ projectsRoot: projects, backupDir, pushNow: true });
+        assert.deepEqual(r2, { copied: 1, committed: true, pushed: true });
+        assert.equal(await git(['show', 'main:a/README.txt'], remote), 'нове з ноутбука');
+        assert.equal(await git(['show', 'main:c/notes.txt'], remote), 'ще раз з хмари');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('backup: pull не вдався — нічого не копіює й не комітить', async () => {
+    const { root, projects, backupDir } = await setup();
+    try {
+        await backup({ projectsRoot: projects, backupDir, pushNow: true });
+        await writeFile(join(projects, 'a', '.arch', 'README.txt'), 'нове');
+        await git(['remote', 'set-url', 'origin', join(root, 'nema.git')], backupDir);
+        const before = await git(['rev-parse', 'HEAD'], backupDir);
+        await assert.rejects(backup({ projectsRoot: projects, backupDir, pushNow: true }));
+        assert.equal(await git(['rev-parse', 'HEAD'], backupDir), before);
+        assert.equal(await readFile(join(backupDir, 'a', 'README.txt'), 'utf8'), 'a-огляд');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
